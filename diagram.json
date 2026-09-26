@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "author": "Shanice Reih Tanque",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-stm32-bluepill", "id": "board", "top": 0, "left": 0, "attrs": {} }
+  ],
+  "connections": []
+}

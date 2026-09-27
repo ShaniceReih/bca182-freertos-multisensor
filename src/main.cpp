@@ -5,6 +5,7 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
 
 #include "dht22.h"
 
@@ -16,8 +17,9 @@
 static UART_HandleTypeDef huart1;
 static ADC_HandleTypeDef hadc1;
 
+
 /* ============================================================
-   PART 5 - Sensor data structure
+   PART 5 - SensorData structure
    ============================================================ */
 
 struct SensorData
@@ -27,6 +29,13 @@ struct SensorData
     int lightLevel;
     bool motionDetected;
 };
+
+
+/* ============================================================
+   PART 5 - Sensor queue
+   ============================================================ */
+
+static QueueHandle_t sensorQueue = NULL;
 
 
 /* ============================================================
@@ -246,25 +255,27 @@ extern "C" void vApplicationIdleHook(void)
 
 
 /* ============================================================
-   PART 3 TASK SETTINGS
+   Task settings
    ============================================================ */
 
-#define TASK_A_PERIOD_MS       1000
-#define TASK_B_PERIOD_MS       1000
+#define TASK_A_PERIOD_MS          1000
+#define TASK_B_PERIOD_MS          1000
 
-#define TASK_A_PRIORITY        1
-#define TASK_B_PRIORITY        2
+#define TASK_A_PRIORITY           1
+#define TASK_B_PRIORITY           2
 
-#define TASK_STACK_WORDS       256
+#define TASK_STACK_WORDS          256
 
 
-/* ============================================================
-   PART 4 SENSOR TASK SETTINGS
-   ============================================================ */
+#define SENSOR_PERIOD_MS          2000
+#define SENSOR_TASK_PRIORITY      3
+#define SENSOR_STACK_WORDS        384
 
-#define SENSOR_PERIOD_MS       2000
-#define SENSOR_TASK_PRIORITY   3
-#define SENSOR_STACK_WORDS     384
+
+#define QUEUE_TASK_PRIORITY       2
+#define QUEUE_TASK_STACK_WORDS    384
+
+#define SENSOR_QUEUE_LENGTH       5
 
 
 /* ============================================================
@@ -318,14 +329,13 @@ static void TaskB(void *argument)
    ADC1 initialization
 
    PA0 = ADC1 Channel 0
-   Used by the LDR
+   Used by LDR
    ============================================================ */
 
 static void ADC1_Init(void)
 {
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_ADC1_CLK_ENABLE();
-
 
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
@@ -423,7 +433,6 @@ static void ADC1_Init(void)
 
 /* ============================================================
    Read raw LDR ADC value
-   Range: 0 to 4095
    ============================================================ */
 
 static uint16_t LDR_ReadRaw(void)
@@ -432,7 +441,6 @@ static uint16_t LDR_ReadRaw(void)
     {
         return 0;
     }
-
 
     if (
         HAL_ADC_PollForConversion(
@@ -446,54 +454,32 @@ static uint16_t LDR_ReadRaw(void)
         return 0;
     }
 
-
     uint16_t value =
         (uint16_t)HAL_ADC_GetValue(
             &hadc1
         );
 
-
     HAL_ADC_Stop(&hadc1);
-
 
     return value;
 }
 
 
 /* ============================================================
-   Convert LDR raw ADC value to 0-100 %
-   ============================================================ */
+   PART 4 + PART 5 - SENSOR TASK
 
-static uint32_t LDR_ReadPercent(void)
-{
-    uint16_t raw =
-        LDR_ReadRaw();
+   Reads sensors every 2 seconds.
 
-    return
-        ((uint32_t)raw * 100UL)
-        / 4095UL;
-}
-
-
-/* ============================================================
-   PART 4 - SENSOR TASK
-
-   Reads:
-   - DHT22 temperature
-   - DHT22 humidity
-   - LDR light level
-
-   Runs periodically every 2 seconds using vTaskDelayUntil().
+   Then packages readings into SensorData
+   and sends the structure into sensorQueue.
    ============================================================ */
 
 static void SensorTask(void *argument)
 {
     (void)argument;
 
-
     TickType_t lastWakeTime =
         xTaskGetTickCount();
-
 
     const TickType_t sensorPeriod =
         pdMS_TO_TICKS(
@@ -503,45 +489,55 @@ static void SensorTask(void *argument)
 
     for (;;)
     {
-        float temperature = 0.0f;
-        float humidity = 0.0f;
+        SensorData data;
 
+        data.temperature = 0.0f;
+        data.humidity = 0.0f;
+        data.lightLevel = 0;
+
+        /*
+         * PIR sensor is not implemented yet,
+         * so motion is false for now.
+         */
+        data.motionDetected = false;
+
+
+        /* ---------------- DHT22 ---------------- */
 
         bool dhtSuccess =
             DHT22_Read(
-                &temperature,
-                &humidity
+                &data.temperature,
+                &data.humidity
             );
 
+
+        /* ---------------- LDR ---------------- */
 
         uint16_t ldrRaw =
             LDR_ReadRaw();
 
+        data.lightLevel =
+            (int)(
+                ((uint32_t)ldrRaw * 100UL)
+                / 4095UL
+            );
 
-        uint32_t lightPercent =
-            ((uint32_t)ldrRaw * 100UL)
-            / 4095UL;
 
+        /* ---------------- Serial diagnostic ---------------- */
 
-        char buffer[160];
+        char buffer[180];
 
 
         if (dhtSuccess)
         {
-            /*
-             * Convert floating point sensor values
-             * to tenths so printf float support
-             * is not required.
-             */
-
             int temp10 =
                 (int)(
-                    temperature * 10.0f
+                    data.temperature * 10.0f
                 );
 
             int hum10 =
                 (int)(
-                    humidity * 10.0f
+                    data.humidity * 10.0f
                 );
 
 
@@ -552,8 +548,7 @@ static void SensorTask(void *argument)
                 "SensorTask -> "
                 "Temp: %d.%d C | "
                 "Hum: %d.%d %% | "
-                "LDR Raw: %u | "
-                "Light: %lu %%\r\n",
+                "Light: %d %%\r\n",
 
                 temp10 / 10,
 
@@ -564,8 +559,7 @@ static void SensorTask(void *argument)
                 hum10 / 10,
                 hum10 % 10,
 
-                ldrRaw,
-                lightPercent
+                data.lightLevel
             );
         }
         else
@@ -576,11 +570,9 @@ static void SensorTask(void *argument)
 
                 "SensorTask -> "
                 "DHT22 read failed | "
-                "LDR Raw: %u | "
-                "Light: %lu %%\r\n",
+                "Light: %d %%\r\n",
 
-                ldrRaw,
-                lightPercent
+                data.lightLevel
             );
         }
 
@@ -588,19 +580,113 @@ static void SensorTask(void *argument)
         Log(buffer);
 
 
-        /*
-         * Wait until the next fixed
-         * 2-second sensor period.
-         *
-         * Unlike vTaskDelay(), this keeps
-         * the task aligned to a fixed
-         * periodic schedule.
-         */
+        /* ====================================================
+           PART 5 - Send SensorData to queue
+           ==================================================== */
+
+        if (
+            xQueueSend(
+                sensorQueue,
+                &data,
+                0
+            ) == pdPASS
+        )
+        {
+            Log(
+                "SensorTask -> data sent to queue\r\n"
+            );
+        }
+        else
+        {
+            Log(
+                "WARNING: sensor queue full\r\n"
+            );
+        }
+
+
+        /* ====================================================
+           Maintain fixed 2-second period
+           ==================================================== */
 
         vTaskDelayUntil(
             &lastWakeTime,
             sensorPeriod
         );
+    }
+}
+
+
+/* ============================================================
+   PART 5 - QUEUE MONITOR TASK
+
+   Waits for SensorData from sensorQueue.
+
+   This proves inter-task communication using
+   a FreeRTOS queue.
+   ============================================================ */
+
+static void QueueMonitorTask(void *argument)
+{
+    (void)argument;
+
+    SensorData receivedData;
+
+
+    for (;;)
+    {
+        if (
+            xQueueReceive(
+                sensorQueue,
+                &receivedData,
+                portMAX_DELAY
+            ) == pdPASS
+        )
+        {
+            int temp10 =
+                (int)(
+                    receivedData.temperature
+                    * 10.0f
+                );
+
+            int hum10 =
+                (int)(
+                    receivedData.humidity
+                    * 10.0f
+                );
+
+
+            char buffer[180];
+
+
+            snprintf(
+                buffer,
+                sizeof(buffer),
+
+                "Queue RX -> "
+                "Temp: %d.%d C | "
+                "Hum: %d.%d %% | "
+                "Light: %d %% | "
+                "Motion: %s\r\n",
+
+                temp10 / 10,
+
+                temp10 < 0
+                    ? -(temp10 % 10)
+                    : temp10 % 10,
+
+                hum10 / 10,
+                hum10 % 10,
+
+                receivedData.lightLevel,
+
+                receivedData.motionDetected
+                    ? "YES"
+                    : "NO"
+            );
+
+
+            Log(buffer);
+        }
     }
 }
 
@@ -622,7 +708,7 @@ int main(void)
     HAL_Init();
 
 
-    /* Hardware initialization */
+    /* Hardware */
 
     LED_Init();
 
@@ -631,7 +717,7 @@ int main(void)
     ADC1_Init();
 
 
-    /* DHT22 on PB0 */
+    /* DHT22 */
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -664,15 +750,44 @@ int main(void)
 
 
     /*
-     * DHT22 needs a startup delay
-     * before the first reading.
+     * Allow DHT22 to stabilize.
      */
 
     HAL_Delay(2000);
 
 
     /* ========================================================
-       Create Part 3 tasks
+       PART 5 - Create sensor queue
+
+       Queue contains 5 SensorData structures.
+       ======================================================== */
+
+    sensorQueue =
+        xQueueCreate(
+            SENSOR_QUEUE_LENGTH,
+            sizeof(SensorData)
+        );
+
+
+    if (sensorQueue == NULL)
+    {
+        Log(
+            "ERROR: sensor queue creation failed\r\n"
+        );
+
+        while (1)
+        {
+        }
+    }
+
+
+    Log(
+        "Sensor queue created successfully.\r\n"
+    );
+
+
+    /* ========================================================
+       Create tasks
        ======================================================== */
 
     BaseType_t okA =
@@ -697,10 +812,6 @@ int main(void)
         );
 
 
-    /* ========================================================
-       Create Part 4 SensorTask
-       ======================================================== */
-
     BaseType_t okSensor =
         xTaskCreate(
             SensorTask,
@@ -712,10 +823,22 @@ int main(void)
         );
 
 
+    BaseType_t okQueue =
+        xTaskCreate(
+            QueueMonitorTask,
+            "QueueMonitor",
+            QUEUE_TASK_STACK_WORDS,
+            NULL,
+            QUEUE_TASK_PRIORITY,
+            NULL
+        );
+
+
     if (
         okA != pdPASS ||
         okB != pdPASS ||
-        okSensor != pdPASS
+        okSensor != pdPASS ||
+        okQueue != pdPASS
     )
     {
         Log(
@@ -740,6 +863,10 @@ int main(void)
         "SensorTask created successfully.\r\n"
     );
 
+    Log(
+        "QueueMonitorTask created successfully.\r\n"
+    );
+
 
     /* ========================================================
        Start FreeRTOS
@@ -753,9 +880,7 @@ int main(void)
     vTaskStartScheduler();
 
 
-    /*
-     * Should never reach here.
-     */
+    /* Should never reach here */
 
     Log(
         "ERROR: scheduler failed to start\r\n"

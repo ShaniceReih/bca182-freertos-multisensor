@@ -2,6 +2,7 @@
   "version": 1,
   "author": "Shanice Reih Tanque",
   "editor": "wokwi",
+
   "parts": [
     {
       "type": "board-stm32-bluepill",
@@ -10,26 +11,39 @@
       "left": 0,
       "attrs": {}
     },
+
     {
       "type": "wokwi-dht22",
       "id": "dht",
-      "top": -80,
-      "left": 240,
+      "top": -100,
+      "left": 250,
       "attrs": {
         "temperature": "25.4",
         "humidity": "61.2"
       }
     },
+
     {
       "type": "wokwi-photoresistor-sensor",
       "id": "ldr",
-      "top": 120,
-      "left": 240,
+      "top": 100,
+      "left": 250,
       "attrs": {
         "lux": "500"
       }
+    },
+
+    {
+      "type": "board-ssd1306",
+      "id": "oled",
+      "top": -120,
+      "left": 450,
+      "attrs": {
+        "i2cAddress": "0x3c"
+      }
     }
   ],
+
   "connections": [
     [ "board:A9", "$serialMonitor:RX", "", [] ],
     [ "board:A10", "$serialMonitor:TX", "", [] ],
@@ -40,6 +54,11 @@
 
     [ "ldr:VCC", "board:3V3", "red", [] ],
     [ "ldr:GND", "board:GND", "black", [] ],
-    [ "ldr:AO", "board:A0", "blue", [] ]
+    [ "ldr:AO", "board:A0", "blue", [] ],
+
+    [ "oled:VCC", "board:3V3", "red", [] ],
+    [ "oled:GND", "board:GND", "black", [] ],
+    [ "oled:SCL", "board:B6", "yellow", [] ],
+    [ "oled:SDA", "board:B7", "green", [] ]
   ]
 }

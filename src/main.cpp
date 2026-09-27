@@ -16,6 +16,7 @@
 
 static UART_HandleTypeDef huart1;
 static ADC_HandleTypeDef hadc1;
+static I2C_HandleTypeDef hi2c1;
 
 
 /* ============================================================
@@ -62,11 +63,19 @@ static void LED_Init(void)
 
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    GPIO_InitStruct.Pin = GPIO_PIN_13;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Pin =
+        GPIO_PIN_13;
 
-    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    GPIO_InitStruct.Mode =
+        GPIO_MODE_OUTPUT_PP;
+
+    GPIO_InitStruct.Speed =
+        GPIO_SPEED_FREQ_LOW;
+
+    HAL_GPIO_Init(
+        GPIOC,
+        &GPIO_InitStruct
+    );
 
     /* Blue Pill LED is active-low */
     HAL_GPIO_WritePin(
@@ -85,15 +94,30 @@ static void LED_Init(void)
 
 static void UART1_Init(void)
 {
-    huart1.Instance = USART1;
+    huart1.Instance =
+        USART1;
 
-    huart1.Init.BaudRate = 115200;
-    huart1.Init.WordLength = UART_WORDLENGTH_8B;
-    huart1.Init.StopBits = UART_STOPBITS_1;
-    huart1.Init.Parity = UART_PARITY_NONE;
-    huart1.Init.Mode = UART_MODE_TX_RX;
-    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+    huart1.Init.BaudRate =
+        115200;
+
+    huart1.Init.WordLength =
+        UART_WORDLENGTH_8B;
+
+    huart1.Init.StopBits =
+        UART_STOPBITS_1;
+
+    huart1.Init.Parity =
+        UART_PARITY_NONE;
+
+    huart1.Init.Mode =
+        UART_MODE_TX_RX;
+
+    huart1.Init.HwFlowCtl =
+        UART_HWCONTROL_NONE;
+
+    huart1.Init.OverSampling =
+        UART_OVERSAMPLING_16;
+
 
     if (HAL_UART_Init(&huart1) != HAL_OK)
     {
@@ -123,11 +147,14 @@ static void Log(const char *msg)
 
 static void RawPutc(char c)
 {
-    while ((USART1->SR & USART_SR_TXE) == 0)
+    while (
+        (USART1->SR & USART_SR_TXE) == 0
+    )
     {
     }
 
-    USART1->DR = (uint8_t)c;
+    USART1->DR =
+        (uint8_t)c;
 }
 
 
@@ -148,14 +175,25 @@ static void RawPutNum(uint32_t n)
 
     num[11] = '\0';
 
+
     do
     {
-        num[i--] = (char)('0' + (n % 10));
+        num[i--] =
+            (char)(
+                '0' + (n % 10)
+            );
+
         n /= 10;
 
-    } while (n > 0 && i >= 0);
+    } while (
+        n > 0 &&
+        i >= 0
+    );
 
-    RawPuts(&num[i + 1]);
+
+    RawPuts(
+        &num[i + 1]
+    );
 }
 
 
@@ -173,11 +211,24 @@ extern "C" void vAssertCalled(
     GPIOC->BSRR =
         (uint32_t)GPIO_PIN_13 << 16;
 
-    RawPuts("\r\nASSERT FAILED: ");
+    RawPuts(
+        "\r\nASSERT FAILED: "
+    );
+
     RawPuts(file);
-    RawPuts(" line ");
-    RawPutNum((uint32_t)line);
-    RawPuts("\r\n");
+
+    RawPuts(
+        " line "
+    );
+
+    RawPutNum(
+        (uint32_t)line
+    );
+
+    RawPuts(
+        "\r\n"
+    );
+
 
     for (;;)
     {
@@ -198,12 +249,19 @@ extern "C" void vApplicationStackOverflowHook(
 
     __disable_irq();
 
+
     RawPuts(
         "\r\nSTACK OVERFLOW in task: "
     );
 
-    RawPuts(pcTaskName);
-    RawPuts("\r\n");
+    RawPuts(
+        pcTaskName
+    );
+
+    RawPuts(
+        "\r\n"
+    );
+
 
     for (;;)
     {
@@ -214,7 +272,7 @@ extern "C" void vApplicationStackOverflowHook(
 /* ============================================================
    HAL timebase support
 
-   TIM4 is HAL's tick before scheduler startup.
+   TIM4 provides the HAL tick before FreeRTOS starts.
    ============================================================ */
 
 extern "C" void HAL_TIM_PeriodElapsedCallback(
@@ -233,7 +291,7 @@ extern "C" void HAL_TIM_PeriodElapsedCallback(
 
 
 /* ============================================================
-   Wokwi-compatible FreeRTOS port support
+   Wokwi-compatible FreeRTOS port
    ============================================================ */
 
 extern "C" BaseType_t xPortConsumeTickYield(void);
@@ -247,7 +305,11 @@ extern "C" void vApplicationIdleHook(void)
 {
     __WFI();
 
-    if (xPortConsumeTickYield() != pdFALSE)
+
+    if (
+        xPortConsumeTickYield()
+        != pdFALSE
+    )
     {
         taskYIELD();
     }
@@ -279,12 +341,20 @@ extern "C" void vApplicationIdleHook(void)
 
 
 /* ============================================================
+   PART 6 - OLED settings
+   ============================================================ */
+
+#define OLED_I2C_ADDRESS          0x3C
+
+
+/* ============================================================
    TASK A
    ============================================================ */
 
 static void TaskA(void *argument)
 {
     (void)argument;
+
 
     for (;;)
     {
@@ -293,7 +363,11 @@ static void TaskA(void *argument)
             GPIO_PIN_13
         );
 
-        Log("Task A running\r\n");
+
+        Log(
+            "Task A running\r\n"
+        );
+
 
         vTaskDelay(
             pdMS_TO_TICKS(
@@ -312,9 +386,13 @@ static void TaskB(void *argument)
 {
     (void)argument;
 
+
     for (;;)
     {
-        Log("Task B running\r\n");
+        Log(
+            "Task B running\r\n"
+        );
+
 
         vTaskDelay(
             pdMS_TO_TICKS(
@@ -337,13 +415,16 @@ static void ADC1_Init(void)
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_ADC1_CLK_ENABLE();
 
+
     GPIO_InitTypeDef GPIO_InitStruct = {0};
+
 
     GPIO_InitStruct.Pin =
         GPIO_PIN_0;
 
     GPIO_InitStruct.Mode =
         GPIO_MODE_ANALOG;
+
 
     HAL_GPIO_Init(
         GPIOA,
@@ -353,6 +434,7 @@ static void ADC1_Init(void)
 
     hadc1.Instance =
         ADC1;
+
 
     hadc1.Init.ScanConvMode =
         ADC_SCAN_DISABLE;
@@ -373,7 +455,10 @@ static void ADC1_Init(void)
         1;
 
 
-    if (HAL_ADC_Init(&hadc1) != HAL_OK)
+    if (
+        HAL_ADC_Init(&hadc1)
+        != HAL_OK
+    )
     {
         Log(
             "ERROR: ADC initialization failed\r\n"
@@ -386,6 +471,7 @@ static void ADC1_Init(void)
 
 
     ADC_ChannelConfTypeDef channel = {0};
+
 
     channel.Channel =
         ADC_CHANNEL_0;
@@ -437,10 +523,14 @@ static void ADC1_Init(void)
 
 static uint16_t LDR_ReadRaw(void)
 {
-    if (HAL_ADC_Start(&hadc1) != HAL_OK)
+    if (
+        HAL_ADC_Start(&hadc1)
+        != HAL_OK
+    )
     {
         return 0;
     }
+
 
     if (
         HAL_ADC_PollForConversion(
@@ -449,37 +539,211 @@ static uint16_t LDR_ReadRaw(void)
         ) != HAL_OK
     )
     {
-        HAL_ADC_Stop(&hadc1);
+        HAL_ADC_Stop(
+            &hadc1
+        );
 
         return 0;
     }
 
+
     uint16_t value =
-        (uint16_t)HAL_ADC_GetValue(
+        (uint16_t)
+        HAL_ADC_GetValue(
             &hadc1
         );
 
-    HAL_ADC_Stop(&hadc1);
+
+    HAL_ADC_Stop(
+        &hadc1
+    );
+
 
     return value;
 }
 
 
 /* ============================================================
-   PART 4 + PART 5 - SENSOR TASK
+   PART 6 - I2C1 initialization
 
-   Reads sensors every 2 seconds.
+   PB6 = SCL
+   PB7 = SDA
+   ============================================================ */
 
-   Then packages readings into SensorData
-   and sends the structure into sensorQueue.
+static void I2C1_Init(void)
+{
+    /* Enable required peripheral clocks */
+
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_AFIO_CLK_ENABLE();
+    __HAL_RCC_I2C1_CLK_ENABLE();
+
+
+    /*
+     * Wokwi Blue Pill clock workaround:
+     * ensure APB1 has no divider.
+     *
+     * This gives I2C1 the expected
+     * peripheral clock.
+     */
+
+    RCC->CFGR &=
+        ~RCC_CFGR_PPRE1;
+
+
+    __DSB();
+    __ISB();
+
+
+    /* --------------------------------------------------------
+       Configure PB6 and PB7
+
+       I2C uses alternate-function open-drain.
+       -------------------------------------------------------- */
+
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+
+    GPIO_InitStruct.Pin =
+        GPIO_PIN_6 |
+        GPIO_PIN_7;
+
+    GPIO_InitStruct.Mode =
+        GPIO_MODE_AF_OD;
+
+    GPIO_InitStruct.Speed =
+        GPIO_SPEED_FREQ_HIGH;
+
+
+    HAL_GPIO_Init(
+        GPIOB,
+        &GPIO_InitStruct
+    );
+
+
+    /* Reset I2C1 before configuration */
+
+    __HAL_RCC_I2C1_FORCE_RESET();
+
+    __NOP();
+
+    __HAL_RCC_I2C1_RELEASE_RESET();
+
+
+    /* --------------------------------------------------------
+       I2C configuration
+       -------------------------------------------------------- */
+
+    hi2c1.Instance =
+        I2C1;
+
+
+    hi2c1.Init.ClockSpeed =
+        100000;
+
+    hi2c1.Init.DutyCycle =
+        I2C_DUTYCYCLE_2;
+
+    hi2c1.Init.OwnAddress1 =
+        0;
+
+    hi2c1.Init.AddressingMode =
+        I2C_ADDRESSINGMODE_7BIT;
+
+    hi2c1.Init.DualAddressMode =
+        I2C_DUALADDRESS_DISABLE;
+
+    hi2c1.Init.OwnAddress2 =
+        0;
+
+    hi2c1.Init.GeneralCallMode =
+        I2C_GENERALCALL_DISABLE;
+
+    hi2c1.Init.NoStretchMode =
+        I2C_NOSTRETCH_DISABLE;
+
+
+    if (
+        HAL_I2C_Init(&hi2c1)
+        != HAL_OK
+    )
+    {
+        Log(
+            "ERROR: I2C1 initialization failed\r\n"
+        );
+
+        while (1)
+        {
+        }
+    }
+
+
+    char clockMessage[80];
+
+
+    snprintf(
+        clockMessage,
+        sizeof(clockMessage),
+
+        "PCLK1 for I2C = %lu Hz\r\n",
+
+        HAL_RCC_GetPCLK1Freq()
+    );
+
+
+    Log(
+        clockMessage
+    );
+
+
+    Log(
+        "I2C1 initialized successfully.\r\n"
+    );
+}
+
+
+/* ============================================================
+   PART 6 - Detect OLED at address 0x3C
+   ============================================================ */
+
+static bool OLED_Detect(void)
+{
+    /*
+     * HAL expects the 7-bit address
+     * shifted left by one bit.
+     */
+
+    HAL_StatusTypeDef status =
+        HAL_I2C_IsDeviceReady(
+            &hi2c1,
+            (OLED_I2C_ADDRESS << 1),
+            3,
+            100
+        );
+
+
+    return (
+        status == HAL_OK
+    );
+}
+
+
+/* ============================================================
+   SENSOR TASK
+
+   Reads DHT22 + LDR every 2 seconds,
+   packages data into SensorData,
+   and sends it through sensorQueue.
    ============================================================ */
 
 static void SensorTask(void *argument)
 {
     (void)argument;
 
+
     TickType_t lastWakeTime =
         xTaskGetTickCount();
+
 
     const TickType_t sensorPeriod =
         pdMS_TO_TICKS(
@@ -491,15 +755,18 @@ static void SensorTask(void *argument)
     {
         SensorData data;
 
-        data.temperature = 0.0f;
-        data.humidity = 0.0f;
-        data.lightLevel = 0;
 
-        /*
-         * PIR sensor is not implemented yet,
-         * so motion is false for now.
-         */
-        data.motionDetected = false;
+        data.temperature =
+            0.0f;
+
+        data.humidity =
+            0.0f;
+
+        data.lightLevel =
+            0;
+
+        data.motionDetected =
+            false;
 
 
         /* ---------------- DHT22 ---------------- */
@@ -516,6 +783,7 @@ static void SensorTask(void *argument)
         uint16_t ldrRaw =
             LDR_ReadRaw();
 
+
         data.lightLevel =
             (int)(
                 ((uint32_t)ldrRaw * 100UL)
@@ -523,7 +791,7 @@ static void SensorTask(void *argument)
             );
 
 
-        /* ---------------- Serial diagnostic ---------------- */
+        /* ---------------- Serial output ---------------- */
 
         char buffer[180];
 
@@ -532,12 +800,15 @@ static void SensorTask(void *argument)
         {
             int temp10 =
                 (int)(
-                    data.temperature * 10.0f
+                    data.temperature
+                    * 10.0f
                 );
+
 
             int hum10 =
                 (int)(
-                    data.humidity * 10.0f
+                    data.humidity
+                    * 10.0f
                 );
 
 
@@ -577,7 +848,9 @@ static void SensorTask(void *argument)
         }
 
 
-        Log(buffer);
+        Log(
+            buffer
+        );
 
 
         /* ====================================================
@@ -604,9 +877,7 @@ static void SensorTask(void *argument)
         }
 
 
-        /* ====================================================
-           Maintain fixed 2-second period
-           ==================================================== */
+        /* Fixed periodic schedule */
 
         vTaskDelayUntil(
             &lastWakeTime,
@@ -617,17 +888,13 @@ static void SensorTask(void *argument)
 
 
 /* ============================================================
-   PART 5 - QUEUE MONITOR TASK
-
-   Waits for SensorData from sensorQueue.
-
-   This proves inter-task communication using
-   a FreeRTOS queue.
+   PART 5 - Queue monitor task
    ============================================================ */
 
 static void QueueMonitorTask(void *argument)
 {
     (void)argument;
+
 
     SensorData receivedData;
 
@@ -647,6 +914,7 @@ static void QueueMonitorTask(void *argument)
                     receivedData.temperature
                     * 10.0f
                 );
+
 
             int hum10 =
                 (int)(
@@ -685,7 +953,9 @@ static void QueueMonitorTask(void *argument)
             );
 
 
-            Log(buffer);
+            Log(
+                buffer
+            );
         }
     }
 }
@@ -708,7 +978,9 @@ int main(void)
     HAL_Init();
 
 
-    /* Hardware */
+    /* ========================================================
+       Hardware initialization
+       ======================================================== */
 
     LED_Init();
 
@@ -716,10 +988,15 @@ int main(void)
 
     ADC1_Init();
 
+    I2C1_Init();
 
-    /* DHT22 */
+
+    /* ========================================================
+       DHT22
+       ======================================================== */
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
+
 
     DHT22_Init(
         GPIOB,
@@ -736,30 +1013,56 @@ int main(void)
         "BCA182 FreeRTOS Multisensor\r\n"
     );
 
+
     Log(
         "System starting...\r\n"
     );
 
+
     Log(
         "DHT22 initialized on PB0\r\n"
     );
+
 
     Log(
         "LDR initialized on PA0\r\n"
     );
 
 
+    /* ========================================================
+       PART 6 - OLED detection
+       ======================================================== */
+
+    Log(
+        "Checking OLED at I2C address 0x3C...\r\n"
+    );
+
+
+    if (OLED_Detect())
+    {
+        Log(
+            "OLED detected at I2C address 0x3C!\r\n"
+        );
+    }
+    else
+    {
+        Log(
+            "ERROR: OLED not detected at 0x3C\r\n"
+        );
+    }
+
+
     /*
-     * Allow DHT22 to stabilize.
+     * Allow DHT22 to stabilize before scheduler starts.
      */
 
-    HAL_Delay(2000);
+    HAL_Delay(
+        2000
+    );
 
 
     /* ========================================================
        PART 5 - Create sensor queue
-
-       Queue contains 5 SensorData structures.
        ======================================================== */
 
     sensorQueue =
@@ -769,11 +1072,14 @@ int main(void)
         );
 
 
-    if (sensorQueue == NULL)
+    if (
+        sensorQueue == NULL
+    )
     {
         Log(
             "ERROR: sensor queue creation failed\r\n"
         );
+
 
         while (1)
         {
@@ -845,6 +1151,7 @@ int main(void)
             "ERROR: task creation failed\r\n"
         );
 
+
         while (1)
         {
         }
@@ -855,13 +1162,16 @@ int main(void)
         "Task A created successfully.\r\n"
     );
 
+
     Log(
         "Task B created successfully.\r\n"
     );
 
+
     Log(
         "SensorTask created successfully.\r\n"
     );
+
 
     Log(
         "QueueMonitorTask created successfully.\r\n"

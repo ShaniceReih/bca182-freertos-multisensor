@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "author": "Part 3 clean test",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-stm32-bluepill", "id": "bluepill1", "top": 0, "left": 0, "attrs": {} }
+  ],
+  "connections": [
+    ["bluepill1:A9", "$serialMonitor:RX", "", []],
+    ["bluepill1:A10", "$serialMonitor:TX", "", []]
+  ]
+}

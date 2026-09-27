@@ -149,7 +149,6 @@ extern "C" void vAssertCalled(
 {
     __disable_irq();
 
-    /* LED ON */
     GPIOC->BSRR =
         (uint32_t)GPIO_PIN_13 << 16;
 
@@ -183,7 +182,6 @@ extern "C" void vApplicationStackOverflowHook(
     );
 
     RawPuts(pcTaskName);
-
     RawPuts("\r\n");
 
     for (;;)
@@ -193,12 +191,9 @@ extern "C" void vApplicationStackOverflowHook(
 
 
 /* ============================================================
-   HAL timebase
+   HAL timebase support
 
-   TIM4 is used by HAL before FreeRTOS starts.
-
-   After the scheduler starts, the custom Wokwi-compatible
-   FreeRTOS port provides the RTOS timing.
+   TIM4 is HAL's tick before scheduler startup.
    ============================================================ */
 
 extern "C" void HAL_TIM_PeriodElapsedCallback(
@@ -239,16 +234,25 @@ extern "C" void vApplicationIdleHook(void)
 
 
 /* ============================================================
-   PART 3 - Task settings
+   PART 3 TASK SETTINGS
    ============================================================ */
 
-#define TASK_A_PERIOD_MS   1000
-#define TASK_B_PERIOD_MS   1000
+#define TASK_A_PERIOD_MS       1000
+#define TASK_B_PERIOD_MS       1000
 
-#define TASK_A_PRIORITY    1
-#define TASK_B_PRIORITY    2
+#define TASK_A_PRIORITY        1
+#define TASK_B_PRIORITY        2
 
-#define TASK_STACK_WORDS   256
+#define TASK_STACK_WORDS       256
+
+
+/* ============================================================
+   PART 4 SENSOR TASK SETTINGS
+   ============================================================ */
+
+#define SENSOR_PERIOD_MS       2000
+#define SENSOR_TASK_PRIORITY   3
+#define SENSOR_STACK_WORDS     384
 
 
 /* ============================================================
@@ -311,8 +315,6 @@ static void ADC1_Init(void)
     __HAL_RCC_ADC1_CLK_ENABLE();
 
 
-    /* PA0 = analog input */
-
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
     GPIO_InitStruct.Pin =
@@ -326,8 +328,6 @@ static void ADC1_Init(void)
         &GPIO_InitStruct
     );
 
-
-    /* ADC configuration */
 
     hadc1.Instance =
         ADC1;
@@ -363,8 +363,6 @@ static void ADC1_Init(void)
     }
 
 
-    /* ADC Channel 0 = PA0 */
-
     ADC_ChannelConfTypeDef channel = {0};
 
     channel.Channel =
@@ -394,8 +392,6 @@ static void ADC1_Init(void)
     }
 
 
-    /* STM32F1 ADC calibration */
-
     if (
         HAL_ADCEx_Calibration_Start(
             &hadc1
@@ -415,9 +411,7 @@ static void ADC1_Init(void)
 
 /* ============================================================
    Read raw LDR ADC value
-
-   Range:
-   0 to 4095
+   Range: 0 to 4095
    ============================================================ */
 
 static uint16_t LDR_ReadRaw(void)
@@ -455,6 +449,151 @@ static uint16_t LDR_ReadRaw(void)
 
 
 /* ============================================================
+   Convert LDR raw ADC value to 0-100 %
+   ============================================================ */
+
+static uint32_t LDR_ReadPercent(void)
+{
+    uint16_t raw =
+        LDR_ReadRaw();
+
+    return
+        ((uint32_t)raw * 100UL)
+        / 4095UL;
+}
+
+
+/* ============================================================
+   PART 4 - SENSOR TASK
+
+   Reads:
+   - DHT22 temperature
+   - DHT22 humidity
+   - LDR light level
+
+   Runs periodically every 2 seconds using vTaskDelayUntil().
+   ============================================================ */
+
+static void SensorTask(void *argument)
+{
+    (void)argument;
+
+
+    TickType_t lastWakeTime =
+        xTaskGetTickCount();
+
+
+    const TickType_t sensorPeriod =
+        pdMS_TO_TICKS(
+            SENSOR_PERIOD_MS
+        );
+
+
+    for (;;)
+    {
+        float temperature = 0.0f;
+        float humidity = 0.0f;
+
+
+        bool dhtSuccess =
+            DHT22_Read(
+                &temperature,
+                &humidity
+            );
+
+
+        uint16_t ldrRaw =
+            LDR_ReadRaw();
+
+
+        uint32_t lightPercent =
+            ((uint32_t)ldrRaw * 100UL)
+            / 4095UL;
+
+
+        char buffer[160];
+
+
+        if (dhtSuccess)
+        {
+            /*
+             * Convert floating point sensor values
+             * to tenths so printf float support
+             * is not required.
+             */
+
+            int temp10 =
+                (int)(
+                    temperature * 10.0f
+                );
+
+            int hum10 =
+                (int)(
+                    humidity * 10.0f
+                );
+
+
+            snprintf(
+                buffer,
+                sizeof(buffer),
+
+                "SensorTask -> "
+                "Temp: %d.%d C | "
+                "Hum: %d.%d %% | "
+                "LDR Raw: %u | "
+                "Light: %lu %%\r\n",
+
+                temp10 / 10,
+
+                temp10 < 0
+                    ? -(temp10 % 10)
+                    : temp10 % 10,
+
+                hum10 / 10,
+                hum10 % 10,
+
+                ldrRaw,
+                lightPercent
+            );
+        }
+        else
+        {
+            snprintf(
+                buffer,
+                sizeof(buffer),
+
+                "SensorTask -> "
+                "DHT22 read failed | "
+                "LDR Raw: %u | "
+                "Light: %lu %%\r\n",
+
+                ldrRaw,
+                lightPercent
+            );
+        }
+
+
+        Log(buffer);
+
+
+        /*
+         * Wait until the next fixed
+         * 2-second sensor period.
+         *
+         * Unlike vTaskDelay(), this keeps
+         * the task aligned to a fixed
+         * periodic schedule.
+         */
+
+        vTaskDelayUntil(
+            &lastWakeTime,
+            sensorPeriod
+        );
+    }
+}
+
+
+/* ============================================================
    MAIN
    ============================================================ */
 
@@ -462,7 +601,8 @@ int main(void)
 {
     /* Vector table in Flash */
 
-    SCB->VTOR = FLASH_BASE;
+    SCB->VTOR =
+        FLASH_BASE;
 
 
     /* STM32 HAL */
@@ -470,13 +610,23 @@ int main(void)
     HAL_Init();
 
 
-    /* Hardware */
+    /* Hardware initialization */
 
     LED_Init();
 
     UART1_Init();
 
     ADC1_Init();
+
+
+    /* DHT22 on PB0 */
+
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    DHT22_Init(
+        GPIOB,
+        GPIO_PIN_0
+    );
 
 
     /* ========================================================
@@ -492,136 +642,25 @@ int main(void)
         "System starting...\r\n"
     );
 
-
-    /* ========================================================
-       PART 4 - DHT22 TEST
-       PB0
-       ======================================================== */
-
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-
-
-    DHT22_Init(
-        GPIOB,
-        GPIO_PIN_0
-    );
-
-
     Log(
         "DHT22 initialized on PB0\r\n"
     );
 
+    Log(
+        "LDR initialized on PA0\r\n"
+    );
+
 
     /*
-     * DHT22 needs a short startup delay
-     * after power is applied.
+     * DHT22 needs a startup delay
+     * before the first reading.
      */
 
     HAL_Delay(2000);
 
 
-    float temperature = 0.0f;
-
-    float humidity = 0.0f;
-
-
-    if (
-        DHT22_Read(
-            &temperature,
-            &humidity
-        )
-    )
-    {
-        /*
-         * Convert to tenths so printf
-         * floating-point support is
-         * not required.
-         *
-         * Example:
-         * 25.4 -> 254
-         */
-
-        int temp10 =
-            (int)(temperature * 10.0f);
-
-        int hum10 =
-            (int)(humidity * 10.0f);
-
-
-        char buffer[100];
-
-
-        snprintf(
-            buffer,
-            sizeof(buffer),
-
-            "DHT22 -> Temperature: "
-            "%d.%d C | "
-            "Humidity: %d.%d %%\r\n",
-
-            temp10 / 10,
-
-            temp10 < 0
-                ? -(temp10 % 10)
-                : temp10 % 10,
-
-            hum10 / 10,
-
-            hum10 % 10
-        );
-
-
-        Log(buffer);
-    }
-    else
-    {
-        Log(
-            "ERROR: DHT22 read failed\r\n"
-        );
-    }
-
-
     /* ========================================================
-       PART 4 - LDR TEST
-       PA0 / ADC1 Channel 0
-       ======================================================== */
-
-    uint16_t ldrRaw =
-        LDR_ReadRaw();
-
-
-    /*
-     * Convert 12-bit ADC:
-     *
-     * 0    -> 0%
-     * 4095 -> 100%
-     */
-
-    uint32_t lightPercent =
-        ((uint32_t)ldrRaw * 100UL)
-        / 4095UL;
-
-
-    char ldrBuffer[80];
-
-
-    snprintf(
-        ldrBuffer,
-        sizeof(ldrBuffer),
-
-        "LDR -> Raw: %u | "
-        "Light: %lu %%\r\n",
-
-        ldrRaw,
-        lightPercent
-    );
-
-
-    Log(ldrBuffer);
-
-
-    /* ========================================================
-       Create Part 3 FreeRTOS tasks
+       Create Part 3 tasks
        ======================================================== */
 
     BaseType_t okA =
@@ -646,9 +685,25 @@ int main(void)
         );
 
 
+    /* ========================================================
+       Create Part 4 SensorTask
+       ======================================================== */
+
+    BaseType_t okSensor =
+        xTaskCreate(
+            SensorTask,
+            "SensorTask",
+            SENSOR_STACK_WORDS,
+            NULL,
+            SENSOR_TASK_PRIORITY,
+            NULL
+        );
+
+
     if (
         okA != pdPASS ||
-        okB != pdPASS
+        okB != pdPASS ||
+        okSensor != pdPASS
     )
     {
         Log(
@@ -659,6 +714,19 @@ int main(void)
         {
         }
     }
+
+
+    Log(
+        "Task A created successfully.\r\n"
+    );
+
+    Log(
+        "Task B created successfully.\r\n"
+    );
+
+    Log(
+        "SensorTask created successfully.\r\n"
+    );
 
 
     /* ========================================================
@@ -674,7 +742,7 @@ int main(void)
 
 
     /*
-     * Should never reach here
+     * Should never reach here.
      */
 
     Log(

@@ -16,6 +16,18 @@
 static UART_HandleTypeDef huart1;
 static ADC_HandleTypeDef hadc1;
 
+/* ============================================================
+   PART 5 - Sensor data structure
+   ============================================================ */
+
+struct SensorData
+{
+    float temperature;
+    float humidity;
+    int lightLevel;
+    bool motionDetected;
+};
+
 
 /* ============================================================
    Error handler

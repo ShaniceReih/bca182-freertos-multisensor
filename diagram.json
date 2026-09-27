@@ -41,6 +41,14 @@
       "attrs": {
         "i2cAddress": "0x3c"
       }
+    },
+
+    {
+      "type": "wokwi-ky-040",
+      "id": "encoder",
+      "top": 100,
+      "left": 450,
+      "attrs": {}
     }
   ],
 
@@ -59,6 +67,12 @@
     [ "oled:VCC", "board:3V3", "red", [] ],
     [ "oled:GND", "board:GND", "black", [] ],
     [ "oled:SCL", "board:B6", "yellow", [] ],
-    [ "oled:SDA", "board:B7", "green", [] ]
+    [ "oled:SDA", "board:B7", "green", [] ],
+
+    [ "encoder:VCC", "board:3V3", "red", [] ],
+    [ "encoder:GND", "board:GND", "black", [] ],
+    [ "encoder:CLK", "board:A1", "orange", [] ],
+    [ "encoder:DT", "board:A2", "purple", [] ],
+    [ "encoder:SW", "board:A3", "blue", [] ]
   ]
 }

@@ -21,7 +21,7 @@ static I2C_HandleTypeDef hi2c1;
 
 
 /* ============================================================
-   PART 5 - SensorData structure
+   PART 5 - Sensor data
    ============================================================ */
 
 struct SensorData
@@ -34,10 +34,47 @@ struct SensorData
 
 
 /* ============================================================
-   PART 5 - Sensor queue
+   PART 7 - Display pages
+   ============================================================ */
+
+enum class DisplayMode
+{
+    TEMPERATURE,
+    HUMIDITY,
+    LIGHT,
+    MOTION
+};
+
+
+/* ============================================================
+   FreeRTOS queues
    ============================================================ */
 
 static QueueHandle_t sensorQueue = NULL;
+static QueueHandle_t displayModeQueue = NULL;
+
+
+/* ============================================================
+   Encoder pins
+
+   CLK -> PA1
+   DT  -> PA2
+   SW  -> PA3
+   ============================================================ */
+
+#define ENCODER_PORT       GPIOA
+#define ENCODER_CLK_PIN    GPIO_PIN_1
+#define ENCODER_DT_PIN     GPIO_PIN_2
+#define ENCODER_SW_PIN     GPIO_PIN_3
+
+
+/*
+ * Encoder movement captured by interrupt.
+ *
+ * positive = clockwise
+ * negative = counterclockwise
+ */
+static volatile int32_t encoderDelta = 0;
 
 
 /* ============================================================
@@ -62,22 +99,18 @@ static void LED_Init(void)
 {
     __HAL_RCC_GPIOC_CLK_ENABLE();
 
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitTypeDef gpio = {0};
 
-    GPIO_InitStruct.Pin =
-        GPIO_PIN_13;
-
-    GPIO_InitStruct.Mode =
-        GPIO_MODE_OUTPUT_PP;
-
-    GPIO_InitStruct.Speed =
-        GPIO_SPEED_FREQ_LOW;
+    gpio.Pin = GPIO_PIN_13;
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
 
     HAL_GPIO_Init(
         GPIOC,
-        &GPIO_InitStruct
+        &gpio
     );
 
+    /* Blue Pill LED is active-low */
     HAL_GPIO_WritePin(
         GPIOC,
         GPIO_PIN_13,
@@ -87,42 +120,24 @@ static void LED_Init(void)
 
 
 /* ============================================================
-   USART1
+   UART1
    PA9  = TX
    PA10 = RX
    ============================================================ */
 
 static void UART1_Init(void)
 {
-    huart1.Instance =
-        USART1;
+    huart1.Instance = USART1;
 
-    huart1.Init.BaudRate =
-        115200;
+    huart1.Init.BaudRate = 115200;
+    huart1.Init.WordLength = UART_WORDLENGTH_8B;
+    huart1.Init.StopBits = UART_STOPBITS_1;
+    huart1.Init.Parity = UART_PARITY_NONE;
+    huart1.Init.Mode = UART_MODE_TX_RX;
+    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
 
-    huart1.Init.WordLength =
-        UART_WORDLENGTH_8B;
-
-    huart1.Init.StopBits =
-        UART_STOPBITS_1;
-
-    huart1.Init.Parity =
-        UART_PARITY_NONE;
-
-    huart1.Init.Mode =
-        UART_MODE_TX_RX;
-
-    huart1.Init.HwFlowCtl =
-        UART_HWCONTROL_NONE;
-
-    huart1.Init.OverSampling =
-        UART_OVERSAMPLING_16;
-
-
-    if (
-        HAL_UART_Init(&huart1)
-        != HAL_OK
-    )
+    if (HAL_UART_Init(&huart1) != HAL_OK)
     {
         Error_Handler();
     }
@@ -133,70 +148,66 @@ static void UART1_Init(void)
    Serial logging
    ============================================================ */
 
-static void Log(const char *msg)
+static void Log(const char *message)
 {
     HAL_UART_Transmit(
         &huart1,
-        (uint8_t *)msg,
-        (uint16_t)strlen(msg),
+        (uint8_t *)message,
+        (uint16_t)strlen(message),
         HAL_MAX_DELAY
     );
 }
 
 
 /* ============================================================
-   Raw UART support
+   Raw UART diagnostic functions
    ============================================================ */
 
 static void RawPutc(char c)
 {
     while (
-        (USART1->SR & USART_SR_TXE)
-        == 0
+        (USART1->SR & USART_SR_TXE) == 0
     )
     {
     }
 
-    USART1->DR =
-        (uint8_t)c;
+    USART1->DR = (uint8_t)c;
 }
 
 
-static void RawPuts(const char *s)
+static void RawPuts(const char *text)
 {
-    while (*s)
+    while (*text)
     {
-        RawPutc(*s++);
+        RawPutc(*text++);
     }
 }
 
 
-static void RawPutNum(uint32_t n)
+static void RawPutNum(uint32_t value)
 {
-    char num[12];
+    char number[12];
 
-    int i = 10;
+    int index = 10;
 
-    num[11] = '\0';
-
+    number[11] = '\0';
 
     do
     {
-        num[i--] =
+        number[index--] =
             (char)(
-                '0' + (n % 10)
+                '0' + (value % 10)
             );
 
-        n /= 10;
+        value /= 10;
 
     } while (
-        n > 0 &&
-        i >= 0
+        value > 0 &&
+        index >= 0
     );
 
-
     RawPuts(
-        &num[i + 1]
+        &number[index + 1]
     );
 }
 
@@ -213,8 +224,7 @@ extern "C" void vAssertCalled(
     __disable_irq();
 
     GPIOC->BSRR =
-        (uint32_t)GPIO_PIN_13
-        << 16;
+        (uint32_t)GPIO_PIN_13 << 16;
 
     RawPuts(
         "\r\nASSERT FAILED: "
@@ -234,7 +244,6 @@ extern "C" void vAssertCalled(
         "\r\n"
     );
 
-
     for (;;)
     {
     }
@@ -242,15 +251,15 @@ extern "C" void vAssertCalled(
 
 
 /* ============================================================
-   Stack overflow handler
+   FreeRTOS stack overflow handler
    ============================================================ */
 
 extern "C" void vApplicationStackOverflowHook(
-    TaskHandle_t xTask,
-    char *pcTaskName
+    TaskHandle_t task,
+    char *taskName
 )
 {
-    (void)xTask;
+    (void)task;
 
     __disable_irq();
 
@@ -259,13 +268,12 @@ extern "C" void vApplicationStackOverflowHook(
     );
 
     RawPuts(
-        pcTaskName
+        taskName
     );
 
     RawPuts(
         "\r\n"
     );
-
 
     for (;;)
     {
@@ -274,15 +282,15 @@ extern "C" void vApplicationStackOverflowHook(
 
 
 /* ============================================================
-   HAL timebase
+   HAL timebase support
    ============================================================ */
 
 extern "C" void HAL_TIM_PeriodElapsedCallback(
-    TIM_HandleTypeDef *htim
+    TIM_HandleTypeDef *timer
 )
 {
     if (
-        htim->Instance == TIM4 &&
+        timer->Instance == TIM4 &&
         xTaskGetSchedulerState()
             == taskSCHEDULER_NOT_STARTED
     )
@@ -319,41 +327,45 @@ extern "C" void vApplicationIdleHook(void)
 
 
 /* ============================================================
-   Task settings
+   Task configuration
    ============================================================ */
 
-#define TASK_A_PERIOD_MS          1000
-#define TASK_B_PERIOD_MS          1000
+#define TASK_A_PERIOD_MS       1000
+#define TASK_B_PERIOD_MS       1000
 
-#define TASK_A_PRIORITY           1
-#define TASK_B_PRIORITY           2
+#define TASK_A_PRIORITY        1
+#define TASK_B_PRIORITY        2
 
-#define TASK_STACK_WORDS          256
-
-
-#define SENSOR_PERIOD_MS          2000
-#define SENSOR_TASK_PRIORITY      3
-#define SENSOR_STACK_WORDS        384
+#define TASK_STACK_WORDS       256
 
 
-#define DISPLAY_TASK_PRIORITY     2
-#define DISPLAY_STACK_WORDS       512
+#define SENSOR_PERIOD_MS       2000
+#define SENSOR_TASK_PRIORITY   3
+#define SENSOR_STACK_WORDS     384
 
 
-#define SENSOR_QUEUE_LENGTH       5
+#define DISPLAY_TASK_PRIORITY  2
+#define DISPLAY_STACK_WORDS    512
 
 
-#define OLED_I2C_ADDRESS          0x3C
+#define INPUT_TASK_PRIORITY    3
+#define INPUT_STACK_WORDS      256
+
+#define INPUT_POLL_MS          50
+
+
+#define SENSOR_QUEUE_LENGTH    5
+
+#define OLED_I2C_ADDRESS       0x3C
 
 
 /* ============================================================
-   TASK A
+   Task A
    ============================================================ */
 
 static void TaskA(void *argument)
 {
     (void)argument;
-
 
     for (;;)
     {
@@ -376,13 +388,12 @@ static void TaskA(void *argument)
 
 
 /* ============================================================
-   TASK B
+   Task B
    ============================================================ */
 
 static void TaskB(void *argument)
 {
     (void)argument;
-
 
     for (;;)
     {
@@ -400,8 +411,8 @@ static void TaskB(void *argument)
 
 
 /* ============================================================
-   ADC1 initialization
-   PA0 = LDR
+   ADC / LDR
+   PA0 = ADC1 Channel 0
    ============================================================ */
 
 static void ADC1_Init(void)
@@ -409,24 +420,18 @@ static void ADC1_Init(void)
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_ADC1_CLK_ENABLE();
 
+    GPIO_InitTypeDef gpio = {0};
 
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-    GPIO_InitStruct.Pin =
-        GPIO_PIN_0;
-
-    GPIO_InitStruct.Mode =
-        GPIO_MODE_ANALOG;
-
+    gpio.Pin = GPIO_PIN_0;
+    gpio.Mode = GPIO_MODE_ANALOG;
 
     HAL_GPIO_Init(
         GPIOA,
-        &GPIO_InitStruct
+        &gpio
     );
 
 
-    hadc1.Instance =
-        ADC1;
+    hadc1.Instance = ADC1;
 
     hadc1.Init.ScanConvMode =
         ADC_SCAN_DISABLE;
@@ -453,7 +458,7 @@ static void ADC1_Init(void)
     )
     {
         Log(
-            "ERROR: ADC init failed\r\n"
+            "ERROR: ADC initialization failed\r\n"
         );
 
         while (1)
@@ -464,7 +469,6 @@ static void ADC1_Init(void)
 
     ADC_ChannelConfTypeDef channel =
         {0};
-
 
     channel.Channel =
         ADC_CHANNEL_0;
@@ -480,11 +484,12 @@ static void ADC1_Init(void)
         HAL_ADC_ConfigChannel(
             &hadc1,
             &channel
-        ) != HAL_OK
+        )
+        != HAL_OK
     )
     {
         Log(
-            "ERROR: ADC channel failed\r\n"
+            "ERROR: ADC channel configuration failed\r\n"
         );
 
         while (1)
@@ -496,7 +501,8 @@ static void ADC1_Init(void)
     if (
         HAL_ADCEx_Calibration_Start(
             &hadc1
-        ) != HAL_OK
+        )
+        != HAL_OK
     )
     {
         Log(
@@ -529,7 +535,8 @@ static uint16_t LDR_ReadRaw(void)
         HAL_ADC_PollForConversion(
             &hadc1,
             100
-        ) != HAL_OK
+        )
+        != HAL_OK
     )
     {
         HAL_ADC_Stop(
@@ -557,7 +564,7 @@ static uint16_t LDR_ReadRaw(void)
 
 
 /* ============================================================
-   I2C1 initialization
+   I2C1
    PB6 = SCL
    PB7 = SDA
    ============================================================ */
@@ -569,9 +576,7 @@ static void I2C1_Init(void)
     __HAL_RCC_I2C1_CLK_ENABLE();
 
 
-    /*
-     * Wokwi clock workaround.
-     */
+    /* Wokwi clock workaround */
     RCC->CFGR &=
         ~RCC_CFGR_PPRE1;
 
@@ -579,24 +584,22 @@ static void I2C1_Init(void)
     __ISB();
 
 
-    GPIO_InitTypeDef GPIO_InitStruct =
-        {0};
+    GPIO_InitTypeDef gpio = {0};
 
-
-    GPIO_InitStruct.Pin =
+    gpio.Pin =
         GPIO_PIN_6 |
         GPIO_PIN_7;
 
-    GPIO_InitStruct.Mode =
+    gpio.Mode =
         GPIO_MODE_AF_OD;
 
-    GPIO_InitStruct.Speed =
+    gpio.Speed =
         GPIO_SPEED_FREQ_HIGH;
 
 
     HAL_GPIO_Init(
         GPIOB,
-        &GPIO_InitStruct
+        &gpio
     );
 
 
@@ -609,7 +612,6 @@ static void I2C1_Init(void)
 
     hi2c1.Instance =
         I2C1;
-
 
     hi2c1.Init.ClockSpeed =
         100000;
@@ -642,7 +644,7 @@ static void I2C1_Init(void)
     )
     {
         Log(
-            "ERROR: I2C init failed\r\n"
+            "ERROR: I2C initialization failed\r\n"
         );
 
         while (1)
@@ -651,23 +653,18 @@ static void I2C1_Init(void)
     }
 
 
-    char clockMessage[80];
-
+    char message[80];
 
     snprintf(
-        clockMessage,
-        sizeof(clockMessage),
+        message,
+        sizeof(message),
 
         "PCLK1 for I2C = %lu Hz\r\n",
 
         HAL_RCC_GetPCLK1Freq()
     );
 
-
-    Log(
-        clockMessage
-    );
-
+    Log(message);
 
     Log(
         "I2C1 initialized successfully.\r\n"
@@ -676,7 +673,180 @@ static void I2C1_Init(void)
 
 
 /* ============================================================
-   Detect OLED
+   Rotary encoder initialization
+
+   CLK uses EXTI falling-edge interrupt.
+   DT and SW are normal inputs.
+   ============================================================ */
+
+static void Encoder_Init(void)
+{
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_AFIO_CLK_ENABLE();
+
+
+    /* --------------------------------------------------------
+       CLK = PA1
+       Interrupt on falling edge
+       -------------------------------------------------------- */
+
+    GPIO_InitTypeDef clkGPIO = {0};
+
+    clkGPIO.Pin =
+        ENCODER_CLK_PIN;
+
+    clkGPIO.Mode =
+        GPIO_MODE_IT_FALLING;
+
+    clkGPIO.Pull =
+        GPIO_PULLUP;
+
+
+    HAL_GPIO_Init(
+        ENCODER_PORT,
+        &clkGPIO
+    );
+
+
+    /* --------------------------------------------------------
+       DT + SW
+       Normal pull-up inputs
+       -------------------------------------------------------- */
+
+    GPIO_InitTypeDef inputGPIO = {0};
+
+    inputGPIO.Pin =
+        ENCODER_DT_PIN |
+        ENCODER_SW_PIN;
+
+    inputGPIO.Mode =
+        GPIO_MODE_INPUT;
+
+    inputGPIO.Pull =
+        GPIO_PULLUP;
+
+
+    HAL_GPIO_Init(
+        ENCODER_PORT,
+        &inputGPIO
+    );
+
+
+    /* --------------------------------------------------------
+       Enable EXTI1 interrupt
+       -------------------------------------------------------- */
+
+    HAL_NVIC_SetPriority(
+        EXTI1_IRQn,
+        6,
+        0
+    );
+
+    HAL_NVIC_EnableIRQ(
+        EXTI1_IRQn
+    );
+
+
+    Log(
+        "Rotary encoder initialized with EXTI on PA1\r\n"
+    );
+}
+
+
+/* ============================================================
+   EXTI1 IRQ Handler
+
+   PA1 is EXTI line 1.
+   ============================================================ */
+
+extern "C" void EXTI1_IRQHandler(void)
+{
+    HAL_GPIO_EXTI_IRQHandler(
+        ENCODER_CLK_PIN
+    );
+}
+
+
+/* ============================================================
+   Encoder interrupt callback
+
+   Called immediately when CLK falls.
+
+   Wokwi KY-040 direction:
+   DT HIGH at CLK falling -> clockwise
+   DT LOW  at CLK falling -> counterclockwise
+   ============================================================ */
+
+extern "C" void HAL_GPIO_EXTI_Callback(
+    uint16_t GPIO_Pin
+)
+{
+    if (
+        GPIO_Pin ==
+        ENCODER_CLK_PIN
+    )
+    {
+        GPIO_PinState dt =
+            HAL_GPIO_ReadPin(
+                ENCODER_PORT,
+                ENCODER_DT_PIN
+            );
+
+
+        if (
+            dt == GPIO_PIN_SET
+        )
+        {
+            /*
+             * Clockwise
+             */
+            encoderDelta++;
+        }
+        else
+        {
+            /*
+             * Counterclockwise
+             */
+            encoderDelta--;
+        }
+    }
+}
+
+
+/* ============================================================
+   Safely take accumulated encoder movement.
+
+   Interrupts are disabled only for a few instructions.
+   ============================================================ */
+
+static int32_t EncoderTakeDelta(void)
+{
+    uint32_t previousPrimask =
+        __get_PRIMASK();
+
+
+    __disable_irq();
+
+
+    int32_t delta =
+        encoderDelta;
+
+
+    encoderDelta =
+        0;
+
+
+    __set_PRIMASK(
+        previousPrimask
+    );
+
+
+    return delta;
+}
+
+
+/* ============================================================
+   OLED detection
    ============================================================ */
 
 static bool OLED_Detect(void)
@@ -694,7 +864,7 @@ static bool OLED_Detect(void)
 
 
 /* ============================================================
-   OLED startup screen
+   OLED initial page
    ============================================================ */
 
 static bool OLED_ShowStartupScreen(void)
@@ -714,12 +884,23 @@ static bool OLED_ShowStartupScreen(void)
 
     SSD1306_SetCursor(
         28,
-        3
+        2
     );
 
 
     SSD1306_WriteString(
         "ROOM MONITOR"
+    );
+
+
+    SSD1306_SetCursor(
+        31,
+        4
+    );
+
+
+    SSD1306_WriteString(
+        "TEMPERATURE"
     );
 
 
@@ -731,11 +912,282 @@ static bool OLED_ShowStartupScreen(void)
 
 
 /* ============================================================
-   PART 4 + PART 5
-   SensorTask
+   PART 7 - Navigation logic
+   ============================================================ */
 
-   Read sensors every 2 seconds
-   and send SensorData through queue.
+static DisplayMode nextDisplayMode(
+    DisplayMode mode
+)
+{
+    switch (mode)
+    {
+        case DisplayMode::TEMPERATURE:
+            return DisplayMode::HUMIDITY;
+
+        case DisplayMode::HUMIDITY:
+            return DisplayMode::LIGHT;
+
+        case DisplayMode::LIGHT:
+            return DisplayMode::MOTION;
+
+        case DisplayMode::MOTION:
+        default:
+            return DisplayMode::TEMPERATURE;
+    }
+}
+
+
+static DisplayMode previousDisplayMode(
+    DisplayMode mode
+)
+{
+    switch (mode)
+    {
+        case DisplayMode::TEMPERATURE:
+            return DisplayMode::MOTION;
+
+        case DisplayMode::HUMIDITY:
+            return DisplayMode::TEMPERATURE;
+
+        case DisplayMode::LIGHT:
+            return DisplayMode::HUMIDITY;
+
+        case DisplayMode::MOTION:
+        default:
+            return DisplayMode::LIGHT;
+    }
+}
+
+
+/* ============================================================
+   Display mode name
+   ============================================================ */
+
+static const char *DisplayModeName(
+    DisplayMode mode
+)
+{
+    switch (mode)
+    {
+        case DisplayMode::TEMPERATURE:
+            return "TEMPERATURE";
+
+        case DisplayMode::HUMIDITY:
+            return "HUMIDITY";
+
+        case DisplayMode::LIGHT:
+            return "LIGHT";
+
+        case DisplayMode::MOTION:
+            return "MOTION";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+
+/* ============================================================
+   OLED selected-page rendering
+   ============================================================ */
+
+static void OLED_RenderMode(
+    DisplayMode mode,
+    const SensorData &data
+)
+{
+    SSD1306_Clear();
+
+
+    SSD1306_SetCursor(
+        28,
+        0
+    );
+
+    SSD1306_WriteString(
+        "ROOM MONITOR"
+    );
+
+
+    char value[32];
+
+
+    switch (mode)
+    {
+        /* ----------------------------------------------------
+           TEMPERATURE
+           ---------------------------------------------------- */
+
+        case DisplayMode::TEMPERATURE:
+        {
+            int temp10 =
+                (int)(
+                    data.temperature
+                    * 10.0f
+                );
+
+
+            SSD1306_SetCursor(
+                31,
+                2
+            );
+
+            SSD1306_WriteString(
+                "TEMPERATURE"
+            );
+
+
+            snprintf(
+                value,
+                sizeof(value),
+
+                "%d.%d C",
+
+                temp10 / 10,
+
+                temp10 < 0
+                    ? -(temp10 % 10)
+                    : temp10 % 10
+            );
+
+
+            SSD1306_SetCursor(
+                46,
+                4
+            );
+
+            SSD1306_WriteString(
+                value
+            );
+
+            break;
+        }
+
+
+        /* ----------------------------------------------------
+           HUMIDITY
+           ---------------------------------------------------- */
+
+        case DisplayMode::HUMIDITY:
+        {
+            int hum10 =
+                (int)(
+                    data.humidity
+                    * 10.0f
+                );
+
+
+            SSD1306_SetCursor(
+                40,
+                2
+            );
+
+            SSD1306_WriteString(
+                "HUMIDITY"
+            );
+
+
+            snprintf(
+                value,
+                sizeof(value),
+
+                "%d.%d %%",
+                hum10 / 10,
+                hum10 % 10
+            );
+
+
+            SSD1306_SetCursor(
+                46,
+                4
+            );
+
+            SSD1306_WriteString(
+                value
+            );
+
+            break;
+        }
+
+
+        /* ----------------------------------------------------
+           LIGHT
+           ---------------------------------------------------- */
+
+        case DisplayMode::LIGHT:
+        {
+            SSD1306_SetCursor(
+                49,
+                2
+            );
+
+            SSD1306_WriteString(
+                "LIGHT"
+            );
+
+
+            snprintf(
+                value,
+                sizeof(value),
+
+                "%d %%",
+                data.lightLevel
+            );
+
+
+            SSD1306_SetCursor(
+                49,
+                4
+            );
+
+            SSD1306_WriteString(
+                value
+            );
+
+            break;
+        }
+
+
+        /* ----------------------------------------------------
+           MOTION
+           ---------------------------------------------------- */
+
+        case DisplayMode::MOTION:
+        default:
+        {
+            SSD1306_SetCursor(
+                46,
+                2
+            );
+
+            SSD1306_WriteString(
+                "MOTION"
+            );
+
+
+            SSD1306_SetCursor(
+                52,
+                4
+            );
+
+
+            SSD1306_WriteString(
+                data.motionDetected
+                    ? "YES"
+                    : "NO"
+            );
+
+            break;
+        }
+    }
+
+
+    SSD1306_UpdateScreen();
+}
+
+
+/* ============================================================
+   SensorTask
    ============================================================ */
 
 static void SensorTask(void *argument)
@@ -747,7 +1199,7 @@ static void SensorTask(void *argument)
         xTaskGetTickCount();
 
 
-    const TickType_t sensorPeriod =
+    const TickType_t period =
         pdMS_TO_TICKS(
             SENSOR_PERIOD_MS
         );
@@ -767,39 +1219,47 @@ static void SensorTask(void *argument)
         data.lightLevel =
             0;
 
+        /*
+         * PIR comes in Part IX.
+         */
         data.motionDetected =
             false;
 
 
-        /* DHT22 */
+        /* ----------------------------------------------------
+           DHT22
+           ---------------------------------------------------- */
 
-        bool dhtSuccess =
+        bool dhtOK =
             DHT22_Read(
                 &data.temperature,
                 &data.humidity
             );
 
 
-        /* LDR */
+        /* ----------------------------------------------------
+           LDR
+           ---------------------------------------------------- */
 
-        uint16_t ldrRaw =
+        uint16_t raw =
             LDR_ReadRaw();
 
 
         data.lightLevel =
             (int)(
-                ((uint32_t)ldrRaw
-                 * 100UL)
+                ((uint32_t)raw * 100UL)
                 / 4095UL
             );
 
 
-        /* Diagnostic output */
+        /* ----------------------------------------------------
+           Serial diagnostic
+           ---------------------------------------------------- */
 
-        char buffer[160];
+        char message[180];
 
 
-        if (dhtSuccess)
+        if (dhtOK)
         {
             int temp10 =
                 (int)(
@@ -816,8 +1276,8 @@ static void SensorTask(void *argument)
 
 
             snprintf(
-                buffer,
-                sizeof(buffer),
+                message,
+                sizeof(message),
 
                 "SensorTask -> "
                 "Temp: %d.%d C | "
@@ -839,8 +1299,8 @@ static void SensorTask(void *argument)
         else
         {
             snprintf(
-                buffer,
-                sizeof(buffer),
+                message,
+                sizeof(message),
 
                 "SensorTask -> "
                 "DHT22 read failed | "
@@ -851,12 +1311,12 @@ static void SensorTask(void *argument)
         }
 
 
-        Log(
-            buffer
-        );
+        Log(message);
 
 
-        /* Send data to DisplayTask */
+        /* ----------------------------------------------------
+           Queue data to DisplayTask
+           ---------------------------------------------------- */
 
         if (
             xQueueSend(
@@ -881,17 +1341,171 @@ static void SensorTask(void *argument)
 
         vTaskDelayUntil(
             &lastWakeTime,
-            sensorPeriod
+            period
         );
     }
 }
 
 
 /* ============================================================
-   PART 6 - DisplayTask
+   PART 7 - InputTask
 
-   Receives SensorData from sensorQueue
-   and updates the SSD1306.
+   Interrupt captures the fast physical encoder pulse.
+   InputTask performs the actual navigation logic.
+   ============================================================ */
+
+static void InputTask(void *argument)
+{
+    (void)argument;
+
+
+    DisplayMode currentMode =
+        DisplayMode::TEMPERATURE;
+
+
+    GPIO_PinState previousSW =
+        HAL_GPIO_ReadPin(
+            ENCODER_PORT,
+            ENCODER_SW_PIN
+        );
+
+
+    Log(
+        "InputTask started.\r\n"
+    );
+
+
+    for (;;)
+    {
+        /* ----------------------------------------------------
+           Get movement captured by EXTI interrupt
+           ---------------------------------------------------- */
+
+        int32_t movement =
+            EncoderTakeDelta();
+
+
+        /* ----------------------------------------------------
+           Clockwise movement
+           ---------------------------------------------------- */
+
+        while (movement > 0)
+        {
+            currentMode =
+                nextDisplayMode(
+                    currentMode
+                );
+
+
+            Log(
+                "InputTask -> clockwise -> "
+            );
+
+
+            Log(
+                DisplayModeName(
+                    currentMode
+                )
+            );
+
+
+            Log(
+                "\r\n"
+            );
+
+
+            xQueueOverwrite(
+                displayModeQueue,
+                &currentMode
+            );
+
+
+            movement--;
+        }
+
+
+        /* ----------------------------------------------------
+           Counterclockwise movement
+           ---------------------------------------------------- */
+
+        while (movement < 0)
+        {
+            currentMode =
+                previousDisplayMode(
+                    currentMode
+                );
+
+
+            Log(
+                "InputTask -> counterclockwise -> "
+            );
+
+
+            Log(
+                DisplayModeName(
+                    currentMode
+                )
+            );
+
+
+            Log(
+                "\r\n"
+            );
+
+
+            xQueueOverwrite(
+                displayModeQueue,
+                &currentMode
+            );
+
+
+            movement++;
+        }
+
+
+        /* ----------------------------------------------------
+           Encoder button
+           ---------------------------------------------------- */
+
+        GPIO_PinState button =
+            HAL_GPIO_ReadPin(
+                ENCODER_PORT,
+                ENCODER_SW_PIN
+            );
+
+
+        if (
+            previousSW == GPIO_PIN_SET &&
+            button == GPIO_PIN_RESET
+        )
+        {
+            Log(
+                "InputTask -> encoder button pressed\r\n"
+            );
+        }
+
+
+        previousSW =
+            button;
+
+
+        /*
+         * InputTask still blocks normally.
+         * The interrupt only records fast encoder edges.
+         */
+        vTaskDelay(
+            pdMS_TO_TICKS(
+                INPUT_POLL_MS
+            )
+        );
+    }
+}
+
+
+/* ============================================================
+   DisplayTask
+
+   Only this task owns/writes to the OLED.
    ============================================================ */
 
 static void DisplayTask(void *argument)
@@ -899,161 +1513,75 @@ static void DisplayTask(void *argument)
     (void)argument;
 
 
-    SensorData data;
+    SensorData latestData =
+    {
+        0.0f,
+        0.0f,
+        0,
+        false
+    };
+
+
+    DisplayMode currentMode =
+        DisplayMode::TEMPERATURE;
+
+
+    bool haveSensorData =
+        false;
+
+
+    bool redraw =
+        true;
 
 
     for (;;)
     {
+        /* ----------------------------------------------------
+           Receive latest sensor data
+           ---------------------------------------------------- */
+
+        SensorData incomingData;
+
+
         if (
             xQueueReceive(
                 sensorQueue,
-                &data,
-                portMAX_DELAY
+                &incomingData,
+                pdMS_TO_TICKS(50)
             )
             == pdPASS
         )
         {
-            /* ----------------------------------------------
-               Convert values to text
-               ---------------------------------------------- */
+            latestData =
+                incomingData;
+
+            haveSensorData =
+                true;
+
+            redraw =
+                true;
+
 
             int temp10 =
                 (int)(
-                    data.temperature
+                    latestData.temperature
                     * 10.0f
                 );
 
 
             int hum10 =
                 (int)(
-                    data.humidity
+                    latestData.humidity
                     * 10.0f
                 );
 
 
-            char tempLine[24];
-            char humLine[24];
-            char lightLine[24];
-            char motionLine[24];
+            char message[180];
 
 
             snprintf(
-                tempLine,
-                sizeof(tempLine),
-
-                "TEMP: %d.%d C",
-
-                temp10 / 10,
-
-                temp10 < 0
-                    ? -(temp10 % 10)
-                    : temp10 % 10
-            );
-
-
-            snprintf(
-                humLine,
-                sizeof(humLine),
-
-                "HUM: %d.%d %%",
-
-                hum10 / 10,
-                hum10 % 10
-            );
-
-
-            snprintf(
-                lightLine,
-                sizeof(lightLine),
-
-                "LIGHT: %d %%",
-
-                data.lightLevel
-            );
-
-
-            snprintf(
-                motionLine,
-                sizeof(motionLine),
-
-                "MOTION: %s",
-
-                data.motionDetected
-                    ? "YES"
-                    : "NO"
-            );
-
-
-            /* ----------------------------------------------
-               Update OLED
-               ---------------------------------------------- */
-
-            SSD1306_Clear();
-
-
-            SSD1306_SetCursor(
-                28,
-                0
-            );
-
-            SSD1306_WriteString(
-                "ROOM MONITOR"
-            );
-
-
-            SSD1306_SetCursor(
-                0,
-                2
-            );
-
-            SSD1306_WriteString(
-                tempLine
-            );
-
-
-            SSD1306_SetCursor(
-                0,
-                3
-            );
-
-            SSD1306_WriteString(
-                humLine
-            );
-
-
-            SSD1306_SetCursor(
-                0,
-                4
-            );
-
-            SSD1306_WriteString(
-                lightLine
-            );
-
-
-            SSD1306_SetCursor(
-                0,
-                5
-            );
-
-            SSD1306_WriteString(
-                motionLine
-            );
-
-
-            SSD1306_UpdateScreen();
-
-
-            /* ----------------------------------------------
-               Serial proof of queue reception
-               ---------------------------------------------- */
-
-            char serialBuffer[180];
-
-
-            snprintf(
-                serialBuffer,
-                sizeof(serialBuffer),
+                message,
+                sizeof(message),
 
                 "DisplayTask RX -> "
                 "Temp: %d.%d C | "
@@ -1070,17 +1598,76 @@ static void DisplayTask(void *argument)
                 hum10 / 10,
                 hum10 % 10,
 
-                data.lightLevel,
+                latestData.lightLevel,
 
-                data.motionDetected
+                latestData.motionDetected
                     ? "YES"
                     : "NO"
             );
 
 
+            Log(message);
+        }
+
+
+        /* ----------------------------------------------------
+           Receive latest selected page
+           ---------------------------------------------------- */
+
+        DisplayMode newMode;
+
+
+        if (
+            xQueueReceive(
+                displayModeQueue,
+                &newMode,
+                0
+            )
+            == pdPASS
+        )
+        {
+            currentMode =
+                newMode;
+
+            redraw =
+                true;
+
+
             Log(
-                serialBuffer
+                "DisplayTask -> selected page: "
             );
+
+
+            Log(
+                DisplayModeName(
+                    currentMode
+                )
+            );
+
+
+            Log(
+                "\r\n"
+            );
+        }
+
+
+        /* ----------------------------------------------------
+           OLED update
+           ---------------------------------------------------- */
+
+        if (
+            redraw &&
+            haveSensorData
+        )
+        {
+            OLED_RenderMode(
+                currentMode,
+                latestData
+            );
+
+
+            redraw =
+                false;
         }
     }
 }
@@ -1100,7 +1687,7 @@ int main(void)
 
 
     /* ========================================================
-       Hardware
+       Hardware initialization
        ======================================================== */
 
     LED_Init();
@@ -1110,6 +1697,8 @@ int main(void)
     ADC1_Init();
 
     I2C1_Init();
+
+    Encoder_Init();
 
 
     /* ========================================================
@@ -1126,7 +1715,7 @@ int main(void)
 
 
     /* ========================================================
-       Startup
+       Startup messages
        ======================================================== */
 
     Log(
@@ -1147,6 +1736,11 @@ int main(void)
 
     Log(
         "LDR initialized on PA0\r\n"
+    );
+
+
+    Log(
+        "Encoder CLK=PA1 DT=PA2 SW=PA3\r\n"
     );
 
 
@@ -1175,11 +1769,6 @@ int main(void)
             Log(
                 "OLED initialized successfully.\r\n"
             );
-
-
-            Log(
-                "OLED displaying: ROOM MONITOR\r\n"
-            );
         }
         else
         {
@@ -1199,14 +1788,13 @@ int main(void)
     /*
      * Allow DHT22 to stabilize.
      */
-
     HAL_Delay(
         2000
     );
 
 
     /* ========================================================
-       Create sensor queue
+       Create queues
        ======================================================== */
 
     sensorQueue =
@@ -1216,8 +1804,16 @@ int main(void)
         );
 
 
+    displayModeQueue =
+        xQueueCreate(
+            1,
+            sizeof(DisplayMode)
+        );
+
+
     if (
-        sensorQueue == NULL
+        sensorQueue == NULL ||
+        displayModeQueue == NULL
     )
     {
         Log(
@@ -1233,6 +1829,23 @@ int main(void)
 
     Log(
         "Sensor queue created successfully.\r\n"
+    );
+
+
+    Log(
+        "Display mode queue created successfully.\r\n"
+    );
+
+
+    /* Initial display page */
+
+    DisplayMode initialMode =
+        DisplayMode::TEMPERATURE;
+
+
+    xQueueOverwrite(
+        displayModeQueue,
+        &initialMode
     );
 
 
@@ -1284,11 +1897,23 @@ int main(void)
         );
 
 
+    BaseType_t okInput =
+        xTaskCreate(
+            InputTask,
+            "InputTask",
+            INPUT_STACK_WORDS,
+            NULL,
+            INPUT_TASK_PRIORITY,
+            NULL
+        );
+
+
     if (
         okA != pdPASS ||
         okB != pdPASS ||
         okSensor != pdPASS ||
-        okDisplay != pdPASS
+        okDisplay != pdPASS ||
+        okInput != pdPASS
     )
     {
         Log(
@@ -1322,8 +1947,13 @@ int main(void)
     );
 
 
+    Log(
+        "InputTask created successfully.\r\n"
+    );
+
+
     /* ========================================================
-       Start scheduler
+       Start FreeRTOS
        ======================================================== */
 
     Log(

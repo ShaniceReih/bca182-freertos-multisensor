@@ -1,10 +1,13 @@
 #include "stm32f1xx_hal.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include <stdio.h>
 
 UART_HandleTypeDef huart1;
 
 void SystemClock_Config(void);
 static void MX_USART1_UART_Init(void);
+extern "C" void app_main(void);
 
 // Redirects printf() to send characters over USART1
 extern "C" int _write(int file, char *ptr, int len) {
@@ -13,20 +16,39 @@ extern "C" int _write(int file, char *ptr, int len) {
 }
 
 int main(void) {
-    // Initialize the Hardware Abstraction Layer and system clock
     HAL_Init();
     SystemClock_Config();
-    
-    // Initialize the Serial peripheral
     MX_USART1_UART_Init();
 
-    // Print the required laboratory startup messages
     printf("BCA182 FreeRTOS Multisensor\r\n");
     printf("System starting...\r\n");
 
-    while (1) {
-        // The system will idle here for now
+    app_main();
+
+    for (;;) { }
+}
+
+// --- FreeRTOS Application ---
+
+static void TaskA(void *pvParameters) {
+    for (;;) {
+        printf("Task A running\r\n");
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
+}
+
+static void TaskB(void *pvParameters) {
+    for (;;) {
+        printf("Task B running\r\n");
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
+extern "C" void app_main(void) {
+    xTaskCreate(TaskA, "TaskA", 512, NULL, 2, NULL);
+    xTaskCreate(TaskB, "TaskB", 512, NULL, 1, NULL);
+
+    vTaskStartScheduler();
 }
 
 // --- STM32Cube Hardware Configuration Boilerplate ---
@@ -43,7 +65,6 @@ static void MX_USART1_UART_Init(void) {
     HAL_UART_Init(&huart1);
 }
 
-// Minimal clock configuration for Wokwi simulation
 void SystemClock_Config(void) {
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
@@ -62,14 +83,12 @@ void SystemClock_Config(void) {
     HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0);
 }
 
-// Low-level hardware initialization called by HAL_UART_Init
 extern "C" void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle) {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
     if(uartHandle->Instance==USART1) {
         __HAL_RCC_USART1_CLK_ENABLE();
         __HAL_RCC_GPIOA_CLK_ENABLE();
-        
-        // USART1 GPIO Configuration: PA9 -> TX, PA10 -> RX
+
         GPIO_InitStruct.Pin = GPIO_PIN_9;
         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
@@ -79,5 +98,31 @@ extern "C" void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle) {
         GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
         HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    }
+}
+
+// --- Safety net: fault + stack overflow handlers (kept from tonight's debugging) ---
+
+extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
+    printf("STACK OVERFLOW in task: %s\r\n", pcTaskName);
+    for (;;) { }
+}
+
+extern "C" {
+    void HardFault_Handler(void) {
+        printf("!!! HARD FAULT !!!\r\n");
+        for (;;) { }
+    }
+    void MemManage_Handler(void) {
+        printf("!!! MEM MANAGE FAULT !!!\r\n");
+        for (;;) { }
+    }
+    void BusFault_Handler(void) {
+        printf("!!! BUS FAULT !!!\r\n");
+        for (;;) { }
+    }
+    void UsageFault_Handler(void) {
+        printf("!!! USAGE FAULT !!!\r\n");
+        for (;;) { }
     }
 }

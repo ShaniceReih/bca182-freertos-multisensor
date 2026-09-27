@@ -1,9 +1,12 @@
 #include <string.h>
+#include <stdio.h>
 
 #include "stm32f1xx_hal.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
+
+#include "dht22.h"
 
 static UART_HandleTypeDef huart1;
 
@@ -151,12 +154,52 @@ int main(void)
     SCB->VTOR = FLASH_BASE;
 
     HAL_Init();
-    LED_Init();
-    UART1_Init();
+LED_Init();
+UART1_Init();
 
-    Log("BCA182 FreeRTOS Multisensor\r\n");
-    Log("System starting...\r\n");
+Log("BCA182 FreeRTOS Multisensor\r\n");
+Log("System starting...\r\n");
 
+/* ---------- DHT22 test ---------- */
+__HAL_RCC_GPIOB_CLK_ENABLE();
+
+DHT22_Init(GPIOB, GPIO_PIN_0);
+
+Log("DHT22 initialized on PB0\r\n");
+
+/* Give the sensor time after power-up */
+HAL_Delay(2000);
+
+float temperature = 0.0f;
+float humidity = 0.0f;
+
+if (DHT22_Read(&temperature, &humidity))
+{
+    /*
+     * Convert to tenths so we don't need printf float support.
+     * Example: 25.4 -> 254
+     */
+    int temp10 = (int)(temperature * 10.0f);
+    int hum10  = (int)(humidity * 10.0f);
+
+    char buffer[100];
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "DHT22 -> Temperature: %d.%d C | Humidity: %d.%d %%\r\n",
+        temp10 / 10,
+        temp10 < 0 ? -(temp10 % 10) : temp10 % 10,
+        hum10 / 10,
+        hum10 % 10
+    );
+
+    Log(buffer);
+}
+else
+{
+    Log("ERROR: DHT22 read failed\r\n");
+}
     BaseType_t okA = xTaskCreate(TaskA, "TaskA", TASK_STACK_WORDS, NULL, TASK_A_PRIORITY, NULL);
     BaseType_t okB = xTaskCreate(TaskB, "TaskB", TASK_STACK_WORDS, NULL, TASK_B_PRIORITY, NULL);
 

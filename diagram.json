@@ -1,12 +1,32 @@
 {
   "version": 1,
-  "author": "Part 3 clean test",
+  "author": "Shanice Reih Tanque",
   "editor": "wokwi",
   "parts": [
-    { "type": "board-stm32-bluepill", "id": "bluepill1", "top": 0, "left": 0, "attrs": {} }
+    {
+      "type": "board-stm32-bluepill",
+      "id": "board",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-dht22",
+      "id": "dht",
+      "top": -80,
+      "left": 240,
+      "attrs": {
+        "temperature": "25.4",
+        "humidity": "61.2"
+      }
+    }
   ],
   "connections": [
-    ["bluepill1:A9", "$serialMonitor:RX", "", []],
-    ["bluepill1:A10", "$serialMonitor:TX", "", []]
+    [ "board:A9", "$serialMonitor:RX", "", [] ],
+    [ "board:A10", "$serialMonitor:TX", "", [] ],
+
+    [ "dht:VCC", "board:3V3", "red", [] ],
+    [ "dht:GND", "board:GND", "black", [] ],
+    [ "dht:SDA", "board:B0", "green", [] ]
   ]
 }

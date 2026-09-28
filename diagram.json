@@ -2,8 +2,102 @@
   "version": 1,
   "author": "Shanice Reih Tanque",
   "editor": "wokwi",
+
   "parts": [
-    { "type": "board-stm32-bluepill", "id": "board", "top": 0, "left": 0, "attrs": {} }
+    {
+      "type": "board-stm32-bluepill",
+      "id": "board",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+
+    {
+      "type": "wokwi-dht22",
+      "id": "dht",
+      "top": -100,
+      "left": 250,
+      "attrs": {
+        "temperature": "25.4",
+        "humidity": "61.2"
+      }
+    },
+
+    {
+      "type": "wokwi-photoresistor-sensor",
+      "id": "ldr",
+      "top": 100,
+      "left": 250,
+      "attrs": {
+        "lux": "500"
+      }
+    },
+
+    {
+      "type": "board-ssd1306",
+      "id": "oled",
+      "top": -120,
+      "left": 450,
+      "attrs": {
+        "i2cAddress": "0x3c"
+      }
+    },
+
+    {
+      "type": "wokwi-ky-040",
+      "id": "encoder",
+      "top": 100,
+      "left": 450,
+      "attrs": {}
+    },
+
+    {
+      "type": "wokwi-buzzer",
+      "id": "buzzer",
+      "top": 230,
+      "left": 450,
+      "attrs": {
+        "volume": "0.3"
+      }
+    },
+
+    {
+      "type": "wokwi-pir-motion-sensor",
+      "id": "pir",
+      "top": 230,
+      "left": 250,
+      "attrs": {}
+    }
   ],
-  "connections": []
+
+  "connections": [
+    [ "board:A9", "$serialMonitor:RX", "", [] ],
+    [ "board:A10", "$serialMonitor:TX", "", [] ],
+
+    [ "dht:VCC", "board:3V3", "red", [] ],
+    [ "dht:GND", "board:GND", "black", [] ],
+    [ "dht:SDA", "board:B0", "green", [] ],
+
+    [ "ldr:VCC", "board:3V3", "red", [] ],
+    [ "ldr:GND", "board:GND", "black", [] ],
+    [ "ldr:AO", "board:A0", "blue", [] ],
+
+    [ "oled:VCC", "board:3V3", "red", [] ],
+    [ "oled:GND", "board:GND", "black", [] ],
+    [ "oled:SCL", "board:B6", "yellow", [] ],
+    [ "oled:SDA", "board:B7", "green", [] ],
+
+    [ "encoder:VCC", "board:3V3", "red", [] ],
+    [ "encoder:GND", "board:GND", "black", [] ],
+    [ "encoder:CLK", "board:A1", "orange", [] ],
+    [ "encoder:DT", "board:A2", "purple", [] ],
+    [ "encoder:SW", "board:A3", "blue", [] ],
+
+    [ "buzzer:1", "board:GND", "black", [] ],
+    [ "buzzer:2", "board:A8", "red", [] ],
+
+    [ "pir:VCC", "board:3V3", "red", [] ],
+    [ "pir:GND", "board:GND", "black", [] ],
+    [ "pir:OUT", "board:B1", "green", [] ]
+  ]
 }

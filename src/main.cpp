@@ -1,128 +1,376 @@
 #include "stm32f1xx_hal.h"
+
 #include "FreeRTOS.h"
 #include "task.h"
-#include <stdio.h>
+#include "queue.h"
+#include "semphr.h"
 
-UART_HandleTypeDef huart1;
+#include "app_config.h"
+#include "app_types.h"
+#include "alarm_task.h"
+#include "dht22.h"
+#include "display.h"
+#include "input.h"
+#include "logging.h"
+#include "motion.h"
+#include "rtos_objects.h"
+#include "sensors.h"
 
-void SystemClock_Config(void);
-static void MX_USART1_UART_Init(void);
-extern "C" void app_main(void);
-
-// Redirects printf() to send characters over USART1
-extern "C" int _write(int file, char *ptr, int len) {
-    HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, HAL_MAX_DELAY);
-    return len;
+extern "C" void Error_Handler(void)
+{
+    __disable_irq();
+    while (1)
+    {
+    }
 }
 
-int main(void) {
+static void LED_Init(void)
+{
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin =
+        GPIO_PIN_13;
+    gpio.Mode =
+        GPIO_MODE_OUTPUT_PP;
+    gpio.Speed =
+        GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(
+        GPIOC,
+        &gpio
+    );
+    HAL_GPIO_WritePin(
+        GPIOC,
+        GPIO_PIN_13,
+        GPIO_PIN_SET
+    );
+}
+
+extern "C" void vAssertCalled(
+    const char *file,
+    int line
+)
+{
+    __disable_irq();
+    GPIOC->BSRR =
+        (uint32_t)GPIO_PIN_13 << 16;
+    RawPuts(
+        "\r\nASSERT FAILED: "
+    );
+    RawPuts(
+        file
+    );
+    RawPuts(
+        " line "
+    );
+    RawPutNum(
+        (uint32_t)line
+    );
+    RawPuts(
+        "\r\n"
+    );
+    for (;;)
+    {
+    }
+}
+
+extern "C" void vApplicationStackOverflowHook(
+    TaskHandle_t task,
+    char *taskName
+)
+{
+    (void)task;
+    __disable_irq();
+    RawPuts(
+        "\r\nSTACK OVERFLOW in task: "
+    );
+    RawPuts(
+        taskName
+    );
+    RawPuts(
+        "\r\n"
+    );
+    for (;;)
+    {
+    }
+}
+
+extern "C" void HAL_TIM_PeriodElapsedCallback(
+    TIM_HandleTypeDef *timer
+)
+{
+    if (
+        timer->Instance == TIM4 &&
+        xTaskGetSchedulerState()
+            == taskSCHEDULER_NOT_STARTED
+    )
+    {
+        HAL_IncTick();
+    }
+}
+
+extern "C" BaseType_t xPortConsumeTickYield(void);
+
+extern "C" void vApplicationIdleHook(void)
+{
+    __WFI();
+    if (
+        xPortConsumeTickYield()
+        != pdFALSE
+    )
+    {
+        taskYIELD();
+    }
+}
+
+int main(void)
+{
+    SCB->VTOR =
+        FLASH_BASE;
     HAL_Init();
-    SystemClock_Config();
-    MX_USART1_UART_Init();
-
-    printf("BCA182 FreeRTOS Multisensor\r\n");
-    printf("System starting...\r\n");
-
-    app_main();
-
-    for (;;) { }
-}
-
-// --- FreeRTOS Application ---
-
-static void TaskA(void *pvParameters) {
-    for (;;) {
-        printf("Task A running\r\n");
-        vTaskDelay(pdMS_TO_TICKS(1000));
+    /* ========================================================
+       Hardware initialization
+       ======================================================== */
+    LED_Init();
+    UART1_Init();
+    ADC1_Init();
+    I2C1_Init();
+    Encoder_Init();
+    Buzzer_Init();
+    PIR_Init();
+    /* ========================================================
+       DHT22
+       ======================================================== */
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    DHT22_Init(
+        GPIOB,
+        GPIO_PIN_0
+    );
+    /* ========================================================
+       Startup messages
+       ======================================================== */
+    Log(
+        "\r\n"
+        "BCA182 FreeRTOS Multisensor\r\n"
+    );
+    Log(
+        "System starting...\r\n"
+    );
+    Log(
+        "DHT22 initialized on PB0\r\n"
+    );
+    Log(
+        "LDR initialized on PA0\r\n"
+    );
+    Log(
+        "Encoder CLK=PA1 DT=PA2 SW=PA3\r\n"
+    );
+    Log(
+        "Buzzer PWM=PA8\r\n"
+    );
+    Log(
+        "PIR OUT=PB1\r\n"
+    );
+    /* ========================================================
+       OLED
+       ======================================================== */
+    Log(
+        "Checking OLED at I2C address 0x3C...\r\n"
+    );
+    if (
+        OLED_Detect()
+    )
+    {
+        Log(
+            "OLED detected at I2C address 0x3C!\r\n"
+        );
+        if (
+            OLED_ShowStartupScreen()
+        )
+        {
+            Log(
+                "OLED initialized successfully.\r\n"
+            );
+        }
+        else
+        {
+            Log(
+                "ERROR: OLED initialization failed\r\n"
+            );
+        }
     }
-}
-
-static void TaskB(void *pvParameters) {
-    for (;;) {
-        printf("Task B running\r\n");
-        vTaskDelay(pdMS_TO_TICKS(2000));
+    else
+    {
+        Log(
+            "ERROR: OLED not detected\r\n"
+        );
     }
-}
-
-extern "C" void app_main(void) {
-    xTaskCreate(TaskA, "TaskA", 512, NULL, 2, NULL);
-    xTaskCreate(TaskB, "TaskB", 512, NULL, 1, NULL);
-
+    /*
+     * Give DHT22 time to become ready.
+     */
+    HAL_Delay(
+        2000
+    );
+    /* ========================================================
+       Part XI - UART recursive mutex
+       ======================================================== */
+    serialMutex =
+        xSemaphoreCreateRecursiveMutex();
+    if (serialMutex == NULL)
+    {
+        Log(
+            "ERROR: UART mutex creation failed\r\n"
+        );
+        while (1)
+        {
+        }
+    }
+    Log(
+        "UART recursive mutex created successfully.\r\n"
+    );
+    Log(
+        "Part X task notifications enabled for ACTIVE/MOTION/ALARM events.\r\n"
+    );
+    /* ========================================================
+       Create queues
+       ======================================================== */
+    displaySensorQueue =
+        xQueueCreate(
+            1,
+            sizeof(SensorData)
+        );
+    alarmSensorQueue =
+        xQueueCreate(
+            1,
+            sizeof(SensorData)
+        );
+    displayModeQueue =
+        xQueueCreate(
+            1,
+            sizeof(DisplayMode)
+        );
+    if (
+        displaySensorQueue == NULL ||
+        alarmSensorQueue == NULL ||
+        displayModeQueue == NULL
+    )
+    {
+        Log(
+            "ERROR: queue creation failed\r\n"
+        );
+        while (1)
+        {
+        }
+    }
+    Log(
+        "Display sensor queue created.\r\n"
+    );
+    Log(
+        "Alarm sensor queue created.\r\n"
+    );
+    Log(
+        "Display mode queue created.\r\n"
+    );
+    /* ========================================================
+       Initial display mode
+       ======================================================== */
+    DisplayMode initialMode =
+        DisplayMode::TEMPERATURE;
+    xQueueOverwrite(
+        displayModeQueue,
+        &initialMode
+    );
+    /* ========================================================
+       Create the five meaningful application tasks
+       ======================================================== */
+    BaseType_t okSensor =
+        xTaskCreate(
+            SensorTask,
+            "SensorTask",
+            SENSOR_STACK_WORDS,
+            NULL,
+            SENSOR_TASK_PRIORITY,
+            NULL
+        );
+    BaseType_t okDisplay =
+        xTaskCreate(
+            DisplayTask,
+            "DisplayTask",
+            DISPLAY_STACK_WORDS,
+            NULL,
+            DISPLAY_TASK_PRIORITY,
+            NULL
+        );
+    BaseType_t okInput =
+        xTaskCreate(
+            InputTask,
+            "InputTask",
+            INPUT_STACK_WORDS,
+            NULL,
+            INPUT_TASK_PRIORITY,
+            NULL
+        );
+    BaseType_t okAlarm =
+        xTaskCreate(
+            AlarmTask,
+            "AlarmTask",
+            ALARM_STACK_WORDS,
+            NULL,
+            ALARM_TASK_PRIORITY,
+            NULL
+        );
+    BaseType_t okMotion =
+        xTaskCreate(
+            MotionTask,
+            "MotionTask",
+            MOTION_STACK_WORDS,
+            NULL,
+            MOTION_TASK_PRIORITY,
+            NULL
+        );
+    if (
+        okSensor != pdPASS ||
+        okDisplay != pdPASS ||
+        okInput != pdPASS ||
+        okAlarm != pdPASS ||
+        okMotion != pdPASS
+    )
+    {
+        Log(
+            "ERROR: task creation failed\r\n"
+        );
+        while (1)
+        {
+        }
+    }
+    Log(
+        "SensorTask created successfully.\r\n"
+    );
+    Log(
+        "DisplayTask created successfully.\r\n"
+    );
+    Log(
+        "InputTask created successfully.\r\n"
+    );
+    Log(
+        "AlarmTask created successfully.\r\n"
+    );
+    Log(
+        "MotionTask created successfully.\r\n"
+    );
+    /* ========================================================
+       Start FreeRTOS
+       ======================================================== */
+    Log(
+        "Starting scheduler...\r\n"
+    );
     vTaskStartScheduler();
-}
-
-// --- STM32Cube Hardware Configuration Boilerplate ---
-
-static void MX_USART1_UART_Init(void) {
-    huart1.Instance = USART1;
-    huart1.Init.BaudRate = 115200;
-    huart1.Init.WordLength = UART_WORDLENGTH_8B;
-    huart1.Init.StopBits = UART_STOPBITS_1;
-    huart1.Init.Parity = UART_PARITY_NONE;
-    huart1.Init.Mode = UART_MODE_TX_RX;
-    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-    HAL_UART_Init(&huart1);
-}
-
-void SystemClock_Config(void) {
-    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
-    HAL_RCC_OscConfig(&RCC_OscInitStruct);
-
-    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-    HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0);
-}
-
-extern "C" void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle) {
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    if(uartHandle->Instance==USART1) {
-        __HAL_RCC_USART1_CLK_ENABLE();
-        __HAL_RCC_GPIOA_CLK_ENABLE();
-
-        GPIO_InitStruct.Pin = GPIO_PIN_9;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-        GPIO_InitStruct.Pin = GPIO_PIN_10;
-        GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-    }
-}
-
-// --- Safety net: fault + stack overflow handlers (kept from tonight's debugging) ---
-
-extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
-    printf("STACK OVERFLOW in task: %s\r\n", pcTaskName);
-    for (;;) { }
-}
-
-extern "C" {
-    void HardFault_Handler(void) {
-        printf("!!! HARD FAULT !!!\r\n");
-        for (;;) { }
-    }
-    void MemManage_Handler(void) {
-        printf("!!! MEM MANAGE FAULT !!!\r\n");
-        for (;;) { }
-    }
-    void BusFault_Handler(void) {
-        printf("!!! BUS FAULT !!!\r\n");
-        for (;;) { }
-    }
-    void UsageFault_Handler(void) {
-        printf("!!! USAGE FAULT !!!\r\n");
-        for (;;) { }
+    /*
+     * We should never reach here.
+     */
+    Log(
+        "ERROR: scheduler failed to start\r\n"
+    );
+    while (1)
+    {
     }
 }

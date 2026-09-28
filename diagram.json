@@ -59,6 +59,14 @@
       "attrs": {
         "volume": "0.3"
       }
+    },
+
+    {
+      "type": "wokwi-pir-motion-sensor",
+      "id": "pir",
+      "top": 230,
+      "left": 250,
+      "attrs": {}
     }
   ],
 
@@ -86,6 +94,10 @@
     [ "encoder:SW", "board:A3", "blue", [] ],
 
     [ "buzzer:1", "board:GND", "black", [] ],
-    [ "buzzer:2", "board:A8", "red", [] ]
+    [ "buzzer:2", "board:A8", "red", [] ],
+
+    [ "pir:VCC", "board:3V3", "red", [] ],
+    [ "pir:GND", "board:GND", "black", [] ],
+    [ "pir:OUT", "board:B1", "green", [] ]
   ]
 }

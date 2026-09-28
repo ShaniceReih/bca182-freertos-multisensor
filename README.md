@@ -107,7 +107,7 @@ This diagram shows the main flow of data from the sensors and user inputs to the
 
 The firmware uses five FreeRTOS tasks. Each task has one main responsibility.
 
-## Task Design
+### Task Design
 
 | Task | Priority | Responsibility | Blocking / Timing |
 |---|---:|---|---|

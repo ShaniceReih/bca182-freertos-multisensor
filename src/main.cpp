@@ -9,6 +9,7 @@
 
 #include "dht22.h"
 #include "ssd1306.h"
+#include "alarm.h"
 
 
 /* ============================================================
@@ -18,10 +19,11 @@
 static UART_HandleTypeDef huart1;
 static ADC_HandleTypeDef hadc1;
 static I2C_HandleTypeDef hi2c1;
+static TIM_HandleTypeDef htim1;
 
 
 /* ============================================================
-   PART 5 - Sensor data
+   Sensor data
    ============================================================ */
 
 struct SensorData
@@ -34,7 +36,7 @@ struct SensorData
 
 
 /* ============================================================
-   PART 7 - Display pages
+   PART 7 - Display modes
    ============================================================ */
 
 enum class DisplayMode
@@ -48,19 +50,27 @@ enum class DisplayMode
 
 /* ============================================================
    FreeRTOS queues
+
+   SensorTask publishes the same sensor sample to two consumers.
+
+   displaySensorQueue -> DisplayTask
+   alarmSensorQueue   -> AlarmTask
+
+   A single FreeRTOS queue is not a broadcast mechanism,
+   therefore each consumer gets its own queue.
    ============================================================ */
 
-static QueueHandle_t sensorQueue = NULL;
+static QueueHandle_t displaySensorQueue = NULL;
+static QueueHandle_t alarmSensorQueue = NULL;
+
 static QueueHandle_t displayModeQueue = NULL;
 
 
 /* ============================================================
-   Encoder pins
-
-   CLK -> PA1
-   DT  -> PA2
-   SW  -> PA3
+   Pin definitions
    ============================================================ */
+
+/* Rotary encoder */
 
 #define ENCODER_PORT       GPIOA
 #define ENCODER_CLK_PIN    GPIO_PIN_1
@@ -68,13 +78,53 @@ static QueueHandle_t displayModeQueue = NULL;
 #define ENCODER_SW_PIN     GPIO_PIN_3
 
 
-/*
- * Encoder movement captured by interrupt.
- *
- * positive = clockwise
- * negative = counterclockwise
- */
+/* Buzzer - TIM1 Channel 1 */
+
+#define BUZZER_PORT         GPIOA
+#define BUZZER_PIN          GPIO_PIN_8
+
+
+/* OLED */
+
+#define OLED_I2C_ADDRESS    0x3C
+
+
+/* ============================================================
+   Encoder interrupt accumulator
+   ============================================================ */
+
 static volatile int32_t encoderDelta = 0;
+
+
+/* ============================================================
+   Task settings
+   ============================================================ */
+
+#define TASK_A_PERIOD_MS          1000
+#define TASK_B_PERIOD_MS          1000
+
+#define TASK_A_PRIORITY           1
+#define TASK_B_PRIORITY           2
+
+#define TASK_STACK_WORDS          256
+
+
+#define SENSOR_PERIOD_MS          2000
+#define SENSOR_TASK_PRIORITY      3
+#define SENSOR_STACK_WORDS        384
+
+
+#define DISPLAY_TASK_PRIORITY     2
+#define DISPLAY_STACK_WORDS       512
+
+
+#define INPUT_TASK_PRIORITY       3
+#define INPUT_STACK_WORDS         256
+#define INPUT_POLL_MS             50
+
+
+#define ALARM_TASK_PRIORITY       2
+#define ALARM_STACK_WORDS         384
 
 
 /* ============================================================
@@ -92,7 +142,8 @@ extern "C" void Error_Handler(void)
 
 
 /* ============================================================
-   LED - PC13
+   LED
+   PC13
    ============================================================ */
 
 static void LED_Init(void)
@@ -111,6 +162,7 @@ static void LED_Init(void)
     );
 
     /* Blue Pill LED is active-low */
+
     HAL_GPIO_WritePin(
         GPIOC,
         GPIO_PIN_13,
@@ -137,7 +189,10 @@ static void UART1_Init(void)
     huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
     huart1.Init.OverSampling = UART_OVERSAMPLING_16;
 
-    if (HAL_UART_Init(&huart1) != HAL_OK)
+    if (
+        HAL_UART_Init(&huart1)
+        != HAL_OK
+    )
     {
         Error_Handler();
     }
@@ -145,7 +200,7 @@ static void UART1_Init(void)
 
 
 /* ============================================================
-   Serial logging
+   Logging
    ============================================================ */
 
 static void Log(const char *message)
@@ -160,18 +215,20 @@ static void Log(const char *message)
 
 
 /* ============================================================
-   Raw UART diagnostic functions
+   Raw UART diagnostics
    ============================================================ */
 
 static void RawPutc(char c)
 {
     while (
-        (USART1->SR & USART_SR_TXE) == 0
+        (USART1->SR & USART_SR_TXE)
+        == 0
     )
     {
     }
 
-    USART1->DR = (uint8_t)c;
+    USART1->DR =
+        (uint8_t)c;
 }
 
 
@@ -251,7 +308,7 @@ extern "C" void vAssertCalled(
 
 
 /* ============================================================
-   FreeRTOS stack overflow handler
+   Stack overflow handler
    ============================================================ */
 
 extern "C" void vApplicationStackOverflowHook(
@@ -282,7 +339,7 @@ extern "C" void vApplicationStackOverflowHook(
 
 
 /* ============================================================
-   HAL timebase support
+   HAL timebase
    ============================================================ */
 
 extern "C" void HAL_TIM_PeriodElapsedCallback(
@@ -308,10 +365,6 @@ extern "C" BaseType_t
 xPortConsumeTickYield(void);
 
 
-/* ============================================================
-   Idle hook
-   ============================================================ */
-
 extern "C" void vApplicationIdleHook(void)
 {
     __WFI();
@@ -324,39 +377,6 @@ extern "C" void vApplicationIdleHook(void)
         taskYIELD();
     }
 }
-
-
-/* ============================================================
-   Task configuration
-   ============================================================ */
-
-#define TASK_A_PERIOD_MS       1000
-#define TASK_B_PERIOD_MS       1000
-
-#define TASK_A_PRIORITY        1
-#define TASK_B_PRIORITY        2
-
-#define TASK_STACK_WORDS       256
-
-
-#define SENSOR_PERIOD_MS       2000
-#define SENSOR_TASK_PRIORITY   3
-#define SENSOR_STACK_WORDS     384
-
-
-#define DISPLAY_TASK_PRIORITY  2
-#define DISPLAY_STACK_WORDS    512
-
-
-#define INPUT_TASK_PRIORITY    3
-#define INPUT_STACK_WORDS      256
-
-#define INPUT_POLL_MS          50
-
-
-#define SENSOR_QUEUE_LENGTH    5
-
-#define OLED_I2C_ADDRESS       0x3C
 
 
 /* ============================================================
@@ -411,8 +431,8 @@ static void TaskB(void *argument)
 
 
 /* ============================================================
-   ADC / LDR
-   PA0 = ADC1 Channel 0
+   ADC1 / LDR
+   PA0
    ============================================================ */
 
 static void ADC1_Init(void)
@@ -422,8 +442,11 @@ static void ADC1_Init(void)
 
     GPIO_InitTypeDef gpio = {0};
 
-    gpio.Pin = GPIO_PIN_0;
-    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pin =
+        GPIO_PIN_0;
+
+    gpio.Mode =
+        GPIO_MODE_ANALOG;
 
     HAL_GPIO_Init(
         GPIOA,
@@ -431,7 +454,8 @@ static void ADC1_Init(void)
     );
 
 
-    hadc1.Instance = ADC1;
+    hadc1.Instance =
+        ADC1;
 
     hadc1.Init.ScanConvMode =
         ADC_SCAN_DISABLE;
@@ -467,8 +491,7 @@ static void ADC1_Init(void)
     }
 
 
-    ADC_ChannelConfTypeDef channel =
-        {0};
+    ADC_ChannelConfTypeDef channel = {0};
 
     channel.Channel =
         ADC_CHANNEL_0;
@@ -489,7 +512,7 @@ static void ADC1_Init(void)
     )
     {
         Log(
-            "ERROR: ADC channel configuration failed\r\n"
+            "ERROR: ADC channel failed\r\n"
         );
 
         while (1)
@@ -565,8 +588,8 @@ static uint16_t LDR_ReadRaw(void)
 
 /* ============================================================
    I2C1
-   PB6 = SCL
-   PB7 = SDA
+   PB6 SCL
+   PB7 SDA
    ============================================================ */
 
 static void I2C1_Init(void)
@@ -576,7 +599,8 @@ static void I2C1_Init(void)
     __HAL_RCC_I2C1_CLK_ENABLE();
 
 
-    /* Wokwi clock workaround */
+    /* Wokwi Blue Pill clock workaround */
+
     RCC->CFGR &=
         ~RCC_CFGR_PPRE1;
 
@@ -595,7 +619,6 @@ static void I2C1_Init(void)
 
     gpio.Speed =
         GPIO_SPEED_FREQ_HIGH;
-
 
     HAL_GPIO_Init(
         GPIOB,
@@ -673,10 +696,220 @@ static void I2C1_Init(void)
 
 
 /* ============================================================
-   Rotary encoder initialization
+   PART 8 - Buzzer
 
-   CLK uses EXTI falling-edge interrupt.
-   DT and SW are normal inputs.
+   PA8 = TIM1 Channel 1
+
+   PWM frequency approximately 1 kHz.
+   ============================================================ */
+
+static void Buzzer_Init(void)
+{
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_TIM1_CLK_ENABLE();
+
+
+    /* PA8 = TIM1_CH1 */
+
+    GPIO_InitTypeDef gpio = {0};
+
+    gpio.Pin =
+        BUZZER_PIN;
+
+    gpio.Mode =
+        GPIO_MODE_AF_PP;
+
+    gpio.Speed =
+        GPIO_SPEED_FREQ_HIGH;
+
+    HAL_GPIO_Init(
+        BUZZER_PORT,
+        &gpio
+    );
+
+
+    /*
+     * Calculate TIM1 clock.
+     */
+
+    uint32_t timerClock =
+        HAL_RCC_GetPCLK2Freq();
+
+
+    /*
+     * On STM32F1, if APB2 is prescaled,
+     * timer clock is twice PCLK2.
+     */
+
+    if (
+        (RCC->CFGR & RCC_CFGR_PPRE2)
+        != 0
+    )
+    {
+        timerClock *= 2;
+    }
+
+
+    /*
+     * Make timer counter approximately 1 MHz.
+     */
+
+    uint32_t prescaler =
+        timerClock / 1000000UL;
+
+    if (prescaler == 0)
+    {
+        prescaler = 1;
+    }
+
+
+    htim1.Instance =
+        TIM1;
+
+    htim1.Init.Prescaler =
+        prescaler - 1;
+
+    htim1.Init.CounterMode =
+        TIM_COUNTERMODE_UP;
+
+    /*
+     * 1 MHz / 1000 counts = 1 kHz
+     */
+    htim1.Init.Period =
+        999;
+
+    htim1.Init.ClockDivision =
+        TIM_CLOCKDIVISION_DIV1;
+
+    htim1.Init.RepetitionCounter =
+        0;
+
+
+    if (
+        HAL_TIM_PWM_Init(&htim1)
+        != HAL_OK
+    )
+    {
+        Log(
+            "ERROR: buzzer timer initialization failed\r\n"
+        );
+
+        while (1)
+        {
+        }
+    }
+
+
+    TIM_OC_InitTypeDef channel = {0};
+
+    channel.OCMode =
+        TIM_OCMODE_PWM1;
+
+    /*
+     * Start silent.
+     */
+    channel.Pulse =
+        0;
+
+    channel.OCPolarity =
+        TIM_OCPOLARITY_HIGH;
+
+    channel.OCFastMode =
+        TIM_OCFAST_DISABLE;
+
+
+    if (
+        HAL_TIM_PWM_ConfigChannel(
+            &htim1,
+            &channel,
+            TIM_CHANNEL_1
+        )
+        != HAL_OK
+    )
+    {
+        Log(
+            "ERROR: buzzer PWM configuration failed\r\n"
+        );
+
+        while (1)
+        {
+        }
+    }
+
+
+    /*
+     * Keep PWM running.
+     * Duty 0 = silent.
+     */
+
+    if (
+        HAL_TIM_PWM_Start(
+            &htim1,
+            TIM_CHANNEL_1
+        )
+        != HAL_OK
+    )
+    {
+        Log(
+            "ERROR: buzzer PWM start failed\r\n"
+        );
+
+        while (1)
+        {
+        }
+    }
+
+
+    __HAL_TIM_SET_COMPARE(
+        &htim1,
+        TIM_CHANNEL_1,
+        0
+    );
+
+
+    Log(
+        "Buzzer initialized on PA8.\r\n"
+    );
+}
+
+
+/* ============================================================
+   Buzzer ON/OFF
+
+   Hardware control is separate from evaluateTemperature().
+   ============================================================ */
+
+static void Buzzer_SetAlarm(bool enabled)
+{
+    if (enabled)
+    {
+        /*
+         * Approximately 50% duty cycle.
+         */
+
+        __HAL_TIM_SET_COMPARE(
+            &htim1,
+            TIM_CHANNEL_1,
+            500
+        );
+    }
+    else
+    {
+        /*
+         * 0% duty = silent.
+         */
+
+        __HAL_TIM_SET_COMPARE(
+            &htim1,
+            TIM_CHANNEL_1,
+            0
+        );
+    }
+}
+
+
+/* ============================================================
+   Rotary encoder
    ============================================================ */
 
 static void Encoder_Init(void)
@@ -685,10 +918,7 @@ static void Encoder_Init(void)
     __HAL_RCC_AFIO_CLK_ENABLE();
 
 
-    /* --------------------------------------------------------
-       CLK = PA1
-       Interrupt on falling edge
-       -------------------------------------------------------- */
+    /* CLK = PA1 / EXTI falling edge */
 
     GPIO_InitTypeDef clkGPIO = {0};
 
@@ -701,17 +931,13 @@ static void Encoder_Init(void)
     clkGPIO.Pull =
         GPIO_PULLUP;
 
-
     HAL_GPIO_Init(
         ENCODER_PORT,
         &clkGPIO
     );
 
 
-    /* --------------------------------------------------------
-       DT + SW
-       Normal pull-up inputs
-       -------------------------------------------------------- */
+    /* DT and switch */
 
     GPIO_InitTypeDef inputGPIO = {0};
 
@@ -725,16 +951,11 @@ static void Encoder_Init(void)
     inputGPIO.Pull =
         GPIO_PULLUP;
 
-
     HAL_GPIO_Init(
         ENCODER_PORT,
         &inputGPIO
     );
 
-
-    /* --------------------------------------------------------
-       Enable EXTI1 interrupt
-       -------------------------------------------------------- */
 
     HAL_NVIC_SetPriority(
         EXTI1_IRQn,
@@ -754,9 +975,7 @@ static void Encoder_Init(void)
 
 
 /* ============================================================
-   EXTI1 IRQ Handler
-
-   PA1 is EXTI line 1.
+   Encoder interrupt
    ============================================================ */
 
 extern "C" void EXTI1_IRQHandler(void)
@@ -766,16 +985,6 @@ extern "C" void EXTI1_IRQHandler(void)
     );
 }
 
-
-/* ============================================================
-   Encoder interrupt callback
-
-   Called immediately when CLK falls.
-
-   Wokwi KY-040 direction:
-   DT HIGH at CLK falling -> clockwise
-   DT LOW  at CLK falling -> counterclockwise
-   ============================================================ */
 
 extern "C" void HAL_GPIO_EXTI_Callback(
     uint16_t GPIO_Pin
@@ -797,27 +1006,15 @@ extern "C" void HAL_GPIO_EXTI_Callback(
             dt == GPIO_PIN_SET
         )
         {
-            /*
-             * Clockwise
-             */
             encoderDelta++;
         }
         else
         {
-            /*
-             * Counterclockwise
-             */
             encoderDelta--;
         }
     }
 }
 
-
-/* ============================================================
-   Safely take accumulated encoder movement.
-
-   Interrupts are disabled only for a few instructions.
-   ============================================================ */
 
 static int32_t EncoderTakeDelta(void)
 {
@@ -846,7 +1043,7 @@ static int32_t EncoderTakeDelta(void)
 
 
 /* ============================================================
-   OLED detection
+   OLED
    ============================================================ */
 
 static bool OLED_Detect(void)
@@ -862,10 +1059,6 @@ static bool OLED_Detect(void)
     );
 }
 
-
-/* ============================================================
-   OLED initial page
-   ============================================================ */
 
 static bool OLED_ShowStartupScreen(void)
 {
@@ -912,7 +1105,7 @@ static bool OLED_ShowStartupScreen(void)
 
 
 /* ============================================================
-   PART 7 - Navigation logic
+   Display navigation
    ============================================================ */
 
 static DisplayMode nextDisplayMode(
@@ -959,10 +1152,6 @@ static DisplayMode previousDisplayMode(
 }
 
 
-/* ============================================================
-   Display mode name
-   ============================================================ */
-
 static const char *DisplayModeName(
     DisplayMode mode
 )
@@ -988,7 +1177,7 @@ static const char *DisplayModeName(
 
 
 /* ============================================================
-   OLED selected-page rendering
+   OLED selected measurement
    ============================================================ */
 
 static void OLED_RenderMode(
@@ -1014,16 +1203,11 @@ static void OLED_RenderMode(
 
     switch (mode)
     {
-        /* ----------------------------------------------------
-           TEMPERATURE
-           ---------------------------------------------------- */
-
         case DisplayMode::TEMPERATURE:
         {
             int temp10 =
                 (int)(
-                    data.temperature
-                    * 10.0f
+                    data.temperature * 10.0f
                 );
 
 
@@ -1064,16 +1248,11 @@ static void OLED_RenderMode(
         }
 
 
-        /* ----------------------------------------------------
-           HUMIDITY
-           ---------------------------------------------------- */
-
         case DisplayMode::HUMIDITY:
         {
             int hum10 =
                 (int)(
-                    data.humidity
-                    * 10.0f
+                    data.humidity * 10.0f
                 );
 
 
@@ -1110,10 +1289,6 @@ static void OLED_RenderMode(
         }
 
 
-        /* ----------------------------------------------------
-           LIGHT
-           ---------------------------------------------------- */
-
         case DisplayMode::LIGHT:
         {
             SSD1306_SetCursor(
@@ -1147,10 +1322,6 @@ static void OLED_RenderMode(
             break;
         }
 
-
-        /* ----------------------------------------------------
-           MOTION
-           ---------------------------------------------------- */
 
         case DisplayMode::MOTION:
         default:
@@ -1188,6 +1359,10 @@ static void OLED_RenderMode(
 
 /* ============================================================
    SensorTask
+
+   Reads sensors and fans the data out to:
+   - DisplayTask
+   - AlarmTask
    ============================================================ */
 
 static void SensorTask(void *argument)
@@ -1220,15 +1395,14 @@ static void SensorTask(void *argument)
             0;
 
         /*
-         * PIR comes in Part IX.
+         * PIR arrives in Part IX.
          */
+
         data.motionDetected =
             false;
 
 
-        /* ----------------------------------------------------
-           DHT22
-           ---------------------------------------------------- */
+        /* DHT22 */
 
         bool dhtOK =
             DHT22_Read(
@@ -1237,9 +1411,7 @@ static void SensorTask(void *argument)
             );
 
 
-        /* ----------------------------------------------------
-           LDR
-           ---------------------------------------------------- */
+        /* LDR */
 
         uint16_t raw =
             LDR_ReadRaw();
@@ -1252,9 +1424,7 @@ static void SensorTask(void *argument)
             );
 
 
-        /* ----------------------------------------------------
-           Serial diagnostic
-           ---------------------------------------------------- */
+        /* Serial diagnostic */
 
         char message[180];
 
@@ -1263,15 +1433,13 @@ static void SensorTask(void *argument)
         {
             int temp10 =
                 (int)(
-                    data.temperature
-                    * 10.0f
+                    data.temperature * 10.0f
                 );
 
 
             int hum10 =
                 (int)(
-                    data.humidity
-                    * 10.0f
+                    data.humidity * 10.0f
                 );
 
 
@@ -1315,26 +1483,24 @@ static void SensorTask(void *argument)
 
 
         /* ----------------------------------------------------
-           Queue data to DisplayTask
+           Latest sample for DisplayTask
            ---------------------------------------------------- */
 
-        if (
-            xQueueSend(
-                sensorQueue,
-                &data,
-                0
-            )
-            == pdPASS
-        )
+        xQueueOverwrite(
+            displaySensorQueue,
+            &data
+        );
+
+
+        /* ----------------------------------------------------
+           Only valid DHT temperature is sent to AlarmTask
+           ---------------------------------------------------- */
+
+        if (dhtOK)
         {
-            Log(
-                "SensorTask -> data sent to queue\r\n"
-            );
-        }
-        else
-        {
-            Log(
-                "WARNING: sensor queue full\r\n"
+            xQueueOverwrite(
+                alarmSensorQueue,
+                &data
             );
         }
 
@@ -1348,10 +1514,7 @@ static void SensorTask(void *argument)
 
 
 /* ============================================================
-   PART 7 - InputTask
-
-   Interrupt captures the fast physical encoder pulse.
-   InputTask performs the actual navigation logic.
+   InputTask
    ============================================================ */
 
 static void InputTask(void *argument)
@@ -1377,17 +1540,9 @@ static void InputTask(void *argument)
 
     for (;;)
     {
-        /* ----------------------------------------------------
-           Get movement captured by EXTI interrupt
-           ---------------------------------------------------- */
-
         int32_t movement =
             EncoderTakeDelta();
 
-
-        /* ----------------------------------------------------
-           Clockwise movement
-           ---------------------------------------------------- */
 
         while (movement > 0)
         {
@@ -1401,13 +1556,11 @@ static void InputTask(void *argument)
                 "InputTask -> clockwise -> "
             );
 
-
             Log(
                 DisplayModeName(
                     currentMode
                 )
             );
-
 
             Log(
                 "\r\n"
@@ -1424,10 +1577,6 @@ static void InputTask(void *argument)
         }
 
 
-        /* ----------------------------------------------------
-           Counterclockwise movement
-           ---------------------------------------------------- */
-
         while (movement < 0)
         {
             currentMode =
@@ -1440,13 +1589,11 @@ static void InputTask(void *argument)
                 "InputTask -> counterclockwise -> "
             );
 
-
             Log(
                 DisplayModeName(
                     currentMode
                 )
             );
-
 
             Log(
                 "\r\n"
@@ -1462,10 +1609,6 @@ static void InputTask(void *argument)
             movement++;
         }
 
-
-        /* ----------------------------------------------------
-           Encoder button
-           ---------------------------------------------------- */
 
         GPIO_PinState button =
             HAL_GPIO_ReadPin(
@@ -1489,10 +1632,6 @@ static void InputTask(void *argument)
             button;
 
 
-        /*
-         * InputTask still blocks normally.
-         * The interrupt only records fast encoder edges.
-         */
         vTaskDelay(
             pdMS_TO_TICKS(
                 INPUT_POLL_MS
@@ -1505,7 +1644,7 @@ static void InputTask(void *argument)
 /* ============================================================
    DisplayTask
 
-   Only this task owns/writes to the OLED.
+   Owns the OLED.
    ============================================================ */
 
 static void DisplayTask(void *argument)
@@ -1529,23 +1668,18 @@ static void DisplayTask(void *argument)
     bool haveSensorData =
         false;
 
-
     bool redraw =
         true;
 
 
     for (;;)
     {
-        /* ----------------------------------------------------
-           Receive latest sensor data
-           ---------------------------------------------------- */
-
         SensorData incomingData;
 
 
         if (
             xQueueReceive(
-                sensorQueue,
+                displaySensorQueue,
                 &incomingData,
                 pdMS_TO_TICKS(50)
             )
@@ -1564,15 +1698,13 @@ static void DisplayTask(void *argument)
 
             int temp10 =
                 (int)(
-                    latestData.temperature
-                    * 10.0f
+                    latestData.temperature * 10.0f
                 );
 
 
             int hum10 =
                 (int)(
-                    latestData.humidity
-                    * 10.0f
+                    latestData.humidity * 10.0f
                 );
 
 
@@ -1610,10 +1742,6 @@ static void DisplayTask(void *argument)
         }
 
 
-        /* ----------------------------------------------------
-           Receive latest selected page
-           ---------------------------------------------------- */
-
         DisplayMode newMode;
 
 
@@ -1637,23 +1765,17 @@ static void DisplayTask(void *argument)
                 "DisplayTask -> selected page: "
             );
 
-
             Log(
                 DisplayModeName(
                     currentMode
                 )
             );
 
-
             Log(
                 "\r\n"
             );
         }
 
-
-        /* ----------------------------------------------------
-           OLED update
-           ---------------------------------------------------- */
 
         if (
             redraw &&
@@ -1665,9 +1787,159 @@ static void DisplayTask(void *argument)
                 latestData
             );
 
-
             redraw =
                 false;
+        }
+    }
+}
+
+
+/* ============================================================
+   PART VIII - AlarmTask
+
+   AlarmTask receives valid temperature samples.
+
+   evaluateTemperature() performs pure decision logic.
+
+   AlarmTask owns the buzzer hardware.
+   ============================================================ */
+
+static void AlarmTask(void *argument)
+{
+    (void)argument;
+
+
+    SensorData data;
+
+
+    AlarmState previousState =
+        AlarmState::NORMAL;
+
+
+    Buzzer_SetAlarm(
+        false
+    );
+
+
+    Log(
+        "AlarmTask started.\r\n"
+    );
+
+
+    for (;;)
+    {
+        if (
+            xQueueReceive(
+                alarmSensorQueue,
+                &data,
+                portMAX_DELAY
+            )
+            == pdPASS
+        )
+        {
+            /*
+             * Pure decision logic.
+             */
+
+            AlarmState state =
+                evaluateTemperature(
+                    data.temperature
+                );
+
+
+            /*
+             * Hardware action.
+             */
+
+            bool alarmActive =
+                (
+                    state !=
+                    AlarmState::NORMAL
+                );
+
+
+            Buzzer_SetAlarm(
+                alarmActive
+            );
+
+
+            int temp10 =
+                (int)(
+                    data.temperature * 10.0f
+                );
+
+
+            char message[140];
+
+
+            if (
+                state ==
+                AlarmState::LOW_TEMPERATURE
+            )
+            {
+                snprintf(
+                    message,
+                    sizeof(message),
+
+                    "AlarmTask -> LOW TEMPERATURE "
+                    "(%d.%d C) | Buzzer ON\r\n",
+
+                    temp10 / 10,
+
+                    temp10 < 0
+                        ? -(temp10 % 10)
+                        : temp10 % 10
+                );
+            }
+            else if (
+                state ==
+                AlarmState::HIGH_TEMPERATURE
+            )
+            {
+                snprintf(
+                    message,
+                    sizeof(message),
+
+                    "AlarmTask -> HIGH TEMPERATURE "
+                    "(%d.%d C) | Buzzer ON\r\n",
+
+                    temp10 / 10,
+
+                    temp10 < 0
+                        ? -(temp10 % 10)
+                        : temp10 % 10
+                );
+            }
+            else
+            {
+                snprintf(
+                    message,
+                    sizeof(message),
+
+                    "AlarmTask -> NORMAL "
+                    "(%d.%d C) | Buzzer OFF\r\n",
+
+                    temp10 / 10,
+
+                    temp10 < 0
+                        ? -(temp10 % 10)
+                        : temp10 % 10
+                );
+            }
+
+
+            Log(message);
+
+
+            /*
+             * Keep previousState for later event-group
+             * integration and state-change handling.
+             */
+
+            previousState =
+                state;
+
+            (void)previousState;
         }
     }
 }
@@ -1700,6 +1972,8 @@ int main(void)
 
     Encoder_Init();
 
+    Buzzer_Init();
+
 
     /* ========================================================
        DHT22
@@ -1715,7 +1989,7 @@ int main(void)
 
 
     /* ========================================================
-       Startup messages
+       Startup
        ======================================================== */
 
     Log(
@@ -1741,6 +2015,11 @@ int main(void)
 
     Log(
         "Encoder CLK=PA1 DT=PA2 SW=PA3\r\n"
+    );
+
+
+    Log(
+        "Buzzer PWM=PA8\r\n"
     );
 
 
@@ -1786,8 +2065,9 @@ int main(void)
 
 
     /*
-     * Allow DHT22 to stabilize.
+     * DHT22 startup delay.
      */
+
     HAL_Delay(
         2000
     );
@@ -1795,11 +2075,21 @@ int main(void)
 
     /* ========================================================
        Create queues
+
+       Each sensor consumer gets its own 1-item queue.
+       Only the latest sample matters.
        ======================================================== */
 
-    sensorQueue =
+    displaySensorQueue =
         xQueueCreate(
-            SENSOR_QUEUE_LENGTH,
+            1,
+            sizeof(SensorData)
+        );
+
+
+    alarmSensorQueue =
+        xQueueCreate(
+            1,
             sizeof(SensorData)
         );
 
@@ -1812,7 +2102,8 @@ int main(void)
 
 
     if (
-        sensorQueue == NULL ||
+        displaySensorQueue == NULL ||
+        alarmSensorQueue == NULL ||
         displayModeQueue == NULL
     )
     {
@@ -1828,16 +2119,21 @@ int main(void)
 
 
     Log(
-        "Sensor queue created successfully.\r\n"
+        "Display sensor queue created.\r\n"
     );
 
 
     Log(
-        "Display mode queue created successfully.\r\n"
+        "Alarm sensor queue created.\r\n"
     );
 
 
-    /* Initial display page */
+    Log(
+        "Display mode queue created.\r\n"
+    );
+
+
+    /* Initial OLED page */
 
     DisplayMode initialMode =
         DisplayMode::TEMPERATURE;
@@ -1908,12 +2204,24 @@ int main(void)
         );
 
 
+    BaseType_t okAlarm =
+        xTaskCreate(
+            AlarmTask,
+            "AlarmTask",
+            ALARM_STACK_WORDS,
+            NULL,
+            ALARM_TASK_PRIORITY,
+            NULL
+        );
+
+
     if (
         okA != pdPASS ||
         okB != pdPASS ||
         okSensor != pdPASS ||
         okDisplay != pdPASS ||
-        okInput != pdPASS
+        okInput != pdPASS ||
+        okAlarm != pdPASS
     )
     {
         Log(
@@ -1931,24 +2239,24 @@ int main(void)
         "Task A created successfully.\r\n"
     );
 
-
     Log(
         "Task B created successfully.\r\n"
     );
-
 
     Log(
         "SensorTask created successfully.\r\n"
     );
 
-
     Log(
         "DisplayTask created successfully.\r\n"
     );
 
-
     Log(
         "InputTask created successfully.\r\n"
+    );
+
+    Log(
+        "AlarmTask created successfully.\r\n"
     );
 
 

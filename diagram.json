@@ -49,6 +49,16 @@
       "top": 100,
       "left": 450,
       "attrs": {}
+    },
+
+    {
+      "type": "wokwi-buzzer",
+      "id": "buzzer",
+      "top": 230,
+      "left": 450,
+      "attrs": {
+        "volume": "0.3"
+      }
     }
   ],
 
@@ -73,6 +83,9 @@
     [ "encoder:GND", "board:GND", "black", [] ],
     [ "encoder:CLK", "board:A1", "orange", [] ],
     [ "encoder:DT", "board:A2", "purple", [] ],
-    [ "encoder:SW", "board:A3", "blue", [] ]
+    [ "encoder:SW", "board:A3", "blue", [] ],
+
+    [ "buzzer:1", "board:GND", "black", [] ],
+    [ "buzzer:2", "board:A8", "red", [] ]
   ]
 }

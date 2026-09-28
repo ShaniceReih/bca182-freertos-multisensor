@@ -6,6 +6,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
+#include "event_groups.h"
 
 #include "dht22.h"
 #include "ssd1306.h"
@@ -50,52 +51,57 @@ enum class DisplayMode
 
 
 /* ============================================================
-   FreeRTOS queues
+   FreeRTOS objects
    ============================================================ */
 
 static QueueHandle_t displaySensorQueue = NULL;
 static QueueHandle_t alarmSensorQueue = NULL;
 static QueueHandle_t displayModeQueue = NULL;
 
+static EventGroupHandle_t systemEventGroup = NULL;
+
 
 /* ============================================================
-   Pin definitions
+   PART X - Event bits
    ============================================================ */
 
-/* Rotary encoder */
+#define EVENT_ACTIVE    (1U << 0)
+#define EVENT_MOTION    (1U << 1)
+#define EVENT_ALARM     (1U << 2)
+
+
+/* ============================================================
+   Pins
+   ============================================================ */
 
 #define ENCODER_PORT       GPIOA
 #define ENCODER_CLK_PIN    GPIO_PIN_1
 #define ENCODER_DT_PIN     GPIO_PIN_2
 #define ENCODER_SW_PIN     GPIO_PIN_3
 
+#define BUZZER_PORT        GPIOA
+#define BUZZER_PIN         GPIO_PIN_8
 
-/* Buzzer */
+#define PIR_PORT           GPIOB
+#define PIR_PIN            GPIO_PIN_1
 
-#define BUZZER_PORT         GPIOA
-#define BUZZER_PIN          GPIO_PIN_8
-
-
-/* PIR motion sensor */
-
-#define PIR_PORT            GPIOB
-#define PIR_PIN             GPIO_PIN_1
-
-
-/* OLED */
-
-#define OLED_I2C_ADDRESS    0x3C
+#define OLED_I2C_ADDRESS   0x3C
 
 
 /* ============================================================
-   Encoder interrupt accumulator
+   Encoder state
    ============================================================ */
 
 static volatile int32_t encoderDelta = 0;
 
 
 /* ============================================================
-   Shared motion/system state
+   Shared runtime state
+
+   Part IX's proven state handling remains responsible for
+   continuous state access.
+
+   Part X Event Group is used for signalling state transitions.
    ============================================================ */
 
 static volatile bool latestMotionDetected = false;
@@ -112,24 +118,19 @@ static volatile SystemState currentSystemState =
 #define SENSOR_TASK_PRIORITY      3
 #define SENSOR_STACK_WORDS        384
 
-
 #define DISPLAY_TASK_PRIORITY     2
 #define DISPLAY_STACK_WORDS       512
-
 
 #define INPUT_TASK_PRIORITY       3
 #define INPUT_STACK_WORDS         256
 #define INPUT_POLL_MS             50
 
-
 #define ALARM_TASK_PRIORITY       2
 #define ALARM_STACK_WORDS         384
-
 
 #define MOTION_TASK_PRIORITY      3
 #define MOTION_STACK_WORDS        256
 #define MOTION_POLL_MS            100
-
 
 #define INACTIVITY_TIMEOUT_MS     15000UL
 
@@ -149,8 +150,7 @@ extern "C" void Error_Handler(void)
 
 
 /* ============================================================
-   Diagnostic LED
-   PC13
+   LED
    ============================================================ */
 
 static void LED_Init(void)
@@ -182,9 +182,7 @@ static void LED_Init(void)
 
 
 /* ============================================================
-   UART1
-   PA9  = TX
-   PA10 = RX
+   UART
    ============================================================ */
 
 static void UART1_Init(void)
@@ -213,7 +211,6 @@ static void UART1_Init(void)
     huart1.Init.OverSampling =
         UART_OVERSAMPLING_16;
 
-
     if (
         HAL_UART_Init(&huart1)
         != HAL_OK
@@ -223,10 +220,6 @@ static void UART1_Init(void)
     }
 }
 
-
-/* ============================================================
-   Logging
-   ============================================================ */
 
 static void Log(const char *message)
 {
@@ -240,7 +233,7 @@ static void Log(const char *message)
 
 
 /* ============================================================
-   Raw UART diagnostics
+   Raw diagnostics
    ============================================================ */
 
 static void RawPutc(char c)
@@ -276,7 +269,6 @@ static void RawPutNum(uint32_t value)
     number[11] =
         '\0';
 
-
     do
     {
         number[index--] =
@@ -293,7 +285,6 @@ static void RawPutNum(uint32_t value)
         index >= 0
     );
 
-
     RawPuts(
         &number[index + 1]
     );
@@ -301,7 +292,7 @@ static void RawPutNum(uint32_t value)
 
 
 /* ============================================================
-   FreeRTOS assert handler
+   FreeRTOS assert
    ============================================================ */
 
 extern "C" void vAssertCalled(
@@ -310,10 +301,6 @@ extern "C" void vAssertCalled(
 )
 {
     __disable_irq();
-
-    GPIOC->BSRR =
-        (uint32_t)GPIO_PIN_13 << 16;
-
 
     RawPuts(
         "\r\nASSERT FAILED: "
@@ -335,7 +322,6 @@ extern "C" void vAssertCalled(
         "\r\n"
     );
 
-
     for (;;)
     {
     }
@@ -343,7 +329,7 @@ extern "C" void vAssertCalled(
 
 
 /* ============================================================
-   Stack overflow handler
+   Stack overflow
    ============================================================ */
 
 extern "C" void vApplicationStackOverflowHook(
@@ -354,7 +340,6 @@ extern "C" void vApplicationStackOverflowHook(
     (void)task;
 
     __disable_irq();
-
 
     RawPuts(
         "\r\nSTACK OVERFLOW in task: "
@@ -368,7 +353,6 @@ extern "C" void vApplicationStackOverflowHook(
         "\r\n"
     );
 
-
     for (;;)
     {
     }
@@ -376,7 +360,7 @@ extern "C" void vApplicationStackOverflowHook(
 
 
 /* ============================================================
-   HAL timebase
+   HAL timer callback
    ============================================================ */
 
 extern "C" void HAL_TIM_PeriodElapsedCallback(
@@ -395,11 +379,10 @@ extern "C" void HAL_TIM_PeriodElapsedCallback(
 
 
 /* ============================================================
-   Wokwi-compatible FreeRTOS support
+   Wokwi FreeRTOS compatibility
    ============================================================ */
 
-extern "C" BaseType_t
-xPortConsumeTickYield(void);
+extern "C" BaseType_t xPortConsumeTickYield(void);
 
 
 extern "C" void vApplicationIdleHook(void)
@@ -417,7 +400,7 @@ extern "C" void vApplicationIdleHook(void)
 
 
 /* ============================================================
-   Shared motion/system-state helpers
+   Shared state helpers
    ============================================================ */
 
 static void SetMotionAndSystemState(
@@ -441,14 +424,12 @@ static bool GetMotionDetected(void)
 {
     bool motion;
 
-
     taskENTER_CRITICAL();
 
     motion =
         latestMotionDetected;
 
     taskEXIT_CRITICAL();
-
 
     return motion;
 }
@@ -458,7 +439,6 @@ static SystemState GetSystemState(void)
 {
     SystemState state;
 
-
     taskENTER_CRITICAL();
 
     state =
@@ -466,21 +446,18 @@ static SystemState GetSystemState(void)
 
     taskEXIT_CRITICAL();
 
-
     return state;
 }
 
 
 /* ============================================================
-   ADC1 / LDR
-   PA0
+   ADC / LDR
    ============================================================ */
 
 static void ADC1_Init(void)
 {
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_ADC1_CLK_ENABLE();
-
 
     GPIO_InitTypeDef gpio = {0};
 
@@ -489,7 +466,6 @@ static void ADC1_Init(void)
 
     gpio.Mode =
         GPIO_MODE_ANALOG;
-
 
     HAL_GPIO_Init(
         GPIOA,
@@ -524,13 +500,7 @@ static void ADC1_Init(void)
         != HAL_OK
     )
     {
-        Log(
-            "ERROR: ADC initialization failed\r\n"
-        );
-
-        while (1)
-        {
-        }
+        Error_Handler();
     }
 
 
@@ -554,13 +524,7 @@ static void ADC1_Init(void)
         != HAL_OK
     )
     {
-        Log(
-            "ERROR: ADC channel failed\r\n"
-        );
-
-        while (1)
-        {
-        }
+        Error_Handler();
     }
 
 
@@ -571,20 +535,10 @@ static void ADC1_Init(void)
         != HAL_OK
     )
     {
-        Log(
-            "ERROR: ADC calibration failed\r\n"
-        );
-
-        while (1)
-        {
-        }
+        Error_Handler();
     }
 }
 
-
-/* ============================================================
-   Read LDR
-   ============================================================ */
 
 static uint16_t LDR_ReadRaw(void)
 {
@@ -630,9 +584,7 @@ static uint16_t LDR_ReadRaw(void)
 
 
 /* ============================================================
-   I2C1
-   PB6 = SCL
-   PB7 = SDA
+   I2C / OLED
    ============================================================ */
 
 static void I2C1_Init(void)
@@ -641,10 +593,6 @@ static void I2C1_Init(void)
     __HAL_RCC_AFIO_CLK_ENABLE();
     __HAL_RCC_I2C1_CLK_ENABLE();
 
-
-    /*
-     * Wokwi Blue Pill clock workaround.
-     */
 
     RCC->CFGR &=
         ~RCC_CFGR_PPRE1;
@@ -712,18 +660,11 @@ static void I2C1_Init(void)
         != HAL_OK
     )
     {
-        Log(
-            "ERROR: I2C initialization failed\r\n"
-        );
-
-        while (1)
-        {
-        }
+        Error_Handler();
     }
 
 
     char message[80];
-
 
     snprintf(
         message,
@@ -734,11 +675,9 @@ static void I2C1_Init(void)
         HAL_RCC_GetPCLK1Freq()
     );
 
-
     Log(
         message
     );
-
 
     Log(
         "I2C1 initialized successfully.\r\n"
@@ -748,7 +687,6 @@ static void I2C1_Init(void)
 
 /* ============================================================
    Buzzer
-   PA8 = TIM1 Channel 1
    ============================================================ */
 
 static void Buzzer_Init(void)
@@ -767,7 +705,6 @@ static void Buzzer_Init(void)
 
     gpio.Speed =
         GPIO_SPEED_FREQ_HIGH;
-
 
     HAL_GPIO_Init(
         BUZZER_PORT,
@@ -790,7 +727,8 @@ static void Buzzer_Init(void)
 
 
     uint32_t prescaler =
-        timerClock / 1000000UL;
+        timerClock /
+        1000000UL;
 
 
     if (
@@ -826,13 +764,7 @@ static void Buzzer_Init(void)
         != HAL_OK
     )
     {
-        Log(
-            "ERROR: buzzer timer initialization failed\r\n"
-        );
-
-        while (1)
-        {
-        }
+        Error_Handler();
     }
 
 
@@ -860,13 +792,7 @@ static void Buzzer_Init(void)
         != HAL_OK
     )
     {
-        Log(
-            "ERROR: buzzer PWM configuration failed\r\n"
-        );
-
-        while (1)
-        {
-        }
+        Error_Handler();
     }
 
 
@@ -878,13 +804,7 @@ static void Buzzer_Init(void)
         != HAL_OK
     )
     {
-        Log(
-            "ERROR: buzzer PWM start failed\r\n"
-        );
-
-        while (1)
-        {
-        }
+        Error_Handler();
     }
 
 
@@ -905,28 +825,16 @@ static void Buzzer_SetAlarm(
     bool enabled
 )
 {
-    if (enabled)
-    {
-        __HAL_TIM_SET_COMPARE(
-            &htim1,
-            TIM_CHANNEL_1,
-            500
-        );
-    }
-    else
-    {
-        __HAL_TIM_SET_COMPARE(
-            &htim1,
-            TIM_CHANNEL_1,
-            0
-        );
-    }
+    __HAL_TIM_SET_COMPARE(
+        &htim1,
+        TIM_CHANNEL_1,
+        enabled ? 500 : 0
+    );
 }
 
 
 /* ============================================================
    PIR
-   PB1
    ============================================================ */
 
 static void PIR_Init(void)
@@ -971,7 +879,7 @@ static bool PIR_Read(void)
 
 
 /* ============================================================
-   Rotary encoder
+   Encoder
    ============================================================ */
 
 static void Encoder_Init(void)
@@ -980,40 +888,40 @@ static void Encoder_Init(void)
     __HAL_RCC_AFIO_CLK_ENABLE();
 
 
-    GPIO_InitTypeDef clkGPIO = {0};
+    GPIO_InitTypeDef clk = {0};
 
-    clkGPIO.Pin =
+    clk.Pin =
         ENCODER_CLK_PIN;
 
-    clkGPIO.Mode =
+    clk.Mode =
         GPIO_MODE_IT_FALLING;
 
-    clkGPIO.Pull =
+    clk.Pull =
         GPIO_PULLUP;
 
 
     HAL_GPIO_Init(
         ENCODER_PORT,
-        &clkGPIO
+        &clk
     );
 
 
-    GPIO_InitTypeDef inputGPIO = {0};
+    GPIO_InitTypeDef input = {0};
 
-    inputGPIO.Pin =
+    input.Pin =
         ENCODER_DT_PIN |
         ENCODER_SW_PIN;
 
-    inputGPIO.Mode =
+    input.Mode =
         GPIO_MODE_INPUT;
 
-    inputGPIO.Pull =
+    input.Pull =
         GPIO_PULLUP;
 
 
     HAL_GPIO_Init(
         ENCODER_PORT,
-        &inputGPIO
+        &input
     );
 
 
@@ -1022,7 +930,6 @@ static void Encoder_Init(void)
         6,
         0
     );
-
 
     HAL_NVIC_EnableIRQ(
         EXTI1_IRQn
@@ -1034,10 +941,6 @@ static void Encoder_Init(void)
     );
 }
 
-
-/* ============================================================
-   Encoder interrupt
-   ============================================================ */
 
 extern "C" void EXTI1_IRQHandler(void)
 {
@@ -1136,28 +1039,23 @@ static bool OLED_ShowStartupScreen(void)
 
     SSD1306_Clear();
 
-
     SSD1306_SetCursor(
         28,
         2
     );
 
-
     SSD1306_WriteString(
         "ROOM MONITOR"
     );
-
 
     SSD1306_SetCursor(
         31,
         4
     );
 
-
     SSD1306_WriteString(
         "TEMPERATURE"
     );
-
 
     SSD1306_UpdateScreen();
 
@@ -1255,7 +1153,6 @@ static void OLED_RenderMode(
         0
     );
 
-
     SSD1306_WriteString(
         "ROOM MONITOR"
     );
@@ -1279,7 +1176,6 @@ static void OLED_RenderMode(
                 31,
                 2
             );
-
 
             SSD1306_WriteString(
                 "TEMPERATURE"
@@ -1305,7 +1201,6 @@ static void OLED_RenderMode(
                 4
             );
 
-
             SSD1306_WriteString(
                 value
             );
@@ -1328,7 +1223,6 @@ static void OLED_RenderMode(
                 2
             );
 
-
             SSD1306_WriteString(
                 "HUMIDITY"
             );
@@ -1349,7 +1243,6 @@ static void OLED_RenderMode(
                 4
             );
 
-
             SSD1306_WriteString(
                 value
             );
@@ -1364,7 +1257,6 @@ static void OLED_RenderMode(
                 49,
                 2
             );
-
 
             SSD1306_WriteString(
                 "LIGHT"
@@ -1385,7 +1277,6 @@ static void OLED_RenderMode(
                 4
             );
 
-
             SSD1306_WriteString(
                 value
             );
@@ -1402,7 +1293,6 @@ static void OLED_RenderMode(
                 2
             );
 
-
             SSD1306_WriteString(
                 "MOTION"
             );
@@ -1412,7 +1302,6 @@ static void OLED_RenderMode(
                 52,
                 4
             );
-
 
             SSD1306_WriteString(
                 data.motionDetected
@@ -1556,19 +1445,11 @@ static void SensorTask(
         );
 
 
-        /*
-         * Latest sensor sample for DisplayTask.
-         */
-
         xQueueOverwrite(
             displaySensorQueue,
             &data
         );
 
-
-        /*
-         * Only valid temperature readings go to AlarmTask.
-         */
 
         if (dhtOK)
         {
@@ -1588,7 +1469,11 @@ static void SensorTask(
 
 
 /* ============================================================
-   MotionTask
+   PART X - MotionTask
+
+   Shared state is updated continuously.
+
+   Event Group bits are changed ONLY when the event changes.
    ============================================================ */
 
 static void MotionTask(
@@ -1627,7 +1512,7 @@ static void MotionTask(
 
 
     Log(
-        "MotionTask started. System ACTIVE.\r\n"
+        "MotionTask started. System ACTIVE. EVENT_ACTIVE SET.\r\n"
     );
 
 
@@ -1640,10 +1525,6 @@ static void MotionTask(
         TickType_t now =
             xTaskGetTickCount();
 
-
-        /*
-         * Motion restarts the inactivity timer.
-         */
 
         if (motionDetected)
         {
@@ -1672,6 +1553,10 @@ static void MotionTask(
             );
 
 
+        /*
+         * Continuous system state.
+         */
+
         SetMotionAndSystemState(
             motionDetected,
             newState
@@ -1679,7 +1564,7 @@ static void MotionTask(
 
 
         /*
-         * Motion rising edge.
+         * EVENT_MOTION changes only on an edge.
          */
 
         if (
@@ -1687,14 +1572,39 @@ static void MotionTask(
             !previousMotion
         )
         {
+            xEventGroupSetBits(
+                systemEventGroup,
+                EVENT_MOTION
+            );
+
+
             Log(
                 "MotionTask -> PIR motion detected\r\n"
+            );
+
+            Log(
+                "MotionTask -> EVENT_MOTION SET\r\n"
+            );
+        }
+        else if (
+            !motionDetected &&
+            previousMotion
+        )
+        {
+            xEventGroupClearBits(
+                systemEventGroup,
+                EVENT_MOTION
+            );
+
+
+            Log(
+                "MotionTask -> EVENT_MOTION CLEARED\r\n"
             );
         }
 
 
         /*
-         * State transition.
+         * EVENT_ACTIVE changes only when state changes.
          */
 
         if (
@@ -1707,16 +1617,35 @@ static void MotionTask(
                 SystemState::ACTIVE
             )
             {
+                xEventGroupSetBits(
+                    systemEventGroup,
+                    EVENT_ACTIVE
+                );
+
+
+                Log(
+                    "MotionTask -> EVENT_ACTIVE SET\r\n"
+                );
+
                 Log(
                     "MotionTask -> System state: ACTIVE\r\n"
                 );
             }
             else
             {
+                xEventGroupClearBits(
+                    systemEventGroup,
+                    EVENT_ACTIVE
+                );
+
+
                 Log(
                     "MotionTask -> 15 seconds without motion\r\n"
                 );
 
+                Log(
+                    "MotionTask -> EVENT_ACTIVE CLEARED\r\n"
+                );
 
                 Log(
                     "MotionTask -> System state: INACTIVE\r\n"
@@ -1770,7 +1699,7 @@ static void InputTask(
 
     for (;;)
     {
-        SystemState systemState =
+        SystemState state =
             GetSystemState();
 
 
@@ -1785,12 +1714,8 @@ static void InputTask(
             );
 
 
-        /*
-         * Ignore encoder while INACTIVE.
-         */
-
         if (
-            systemState ==
+            state ==
             SystemState::INACTIVE
         )
         {
@@ -1823,13 +1748,11 @@ static void InputTask(
                 "InputTask -> clockwise -> "
             );
 
-
             Log(
                 DisplayModeName(
                     currentMode
                 )
             );
-
 
             Log(
                 "\r\n"
@@ -1860,13 +1783,11 @@ static void InputTask(
                 "InputTask -> counterclockwise -> "
             );
 
-
             Log(
                 DisplayModeName(
                     currentMode
                 )
             );
-
 
             Log(
                 "\r\n"
@@ -1941,7 +1862,7 @@ static void DisplayTask(
         true;
 
 
-    SystemState previousSystemState =
+    SystemState previousState =
         SystemState::ACTIVE;
 
 
@@ -2057,13 +1978,11 @@ static void DisplayTask(
                 "DisplayTask -> selected page: "
             );
 
-
             Log(
                 DisplayModeName(
                     currentMode
                 )
             );
-
 
             Log(
                 "\r\n"
@@ -2071,21 +1990,17 @@ static void DisplayTask(
         }
 
 
-        SystemState systemState =
+        SystemState state =
             GetSystemState();
 
 
-        /*
-         * ACTIVE / INACTIVE transition.
-         */
-
         if (
-            systemState !=
-            previousSystemState
+            state !=
+            previousState
         )
         {
             if (
-                systemState ==
+                state ==
                 SystemState::INACTIVE
             )
             {
@@ -2114,17 +2029,13 @@ static void DisplayTask(
             }
 
 
-            previousSystemState =
-                systemState;
+            previousState =
+                state;
         }
 
 
-        /*
-         * OLED updates only while ACTIVE.
-         */
-
         if (
-            systemState ==
+            state ==
                 SystemState::ACTIVE &&
             redraw &&
             haveSensorData
@@ -2144,7 +2055,9 @@ static void DisplayTask(
 
 
 /* ============================================================
-   AlarmTask
+   PART X - AlarmTask
+
+   EVENT_ALARM changes only when alarm state changes.
    ============================================================ */
 
 static void AlarmTask(
@@ -2157,13 +2070,17 @@ static void AlarmTask(
     SensorData data;
 
 
+    bool previousAlarmActive =
+        false;
+
+
     Buzzer_SetAlarm(
         false
     );
 
 
     Log(
-        "AlarmTask started.\r\n"
+        "AlarmTask started. EVENT_ALARM initially CLEARED.\r\n"
     );
 
 
@@ -2178,7 +2095,7 @@ static void AlarmTask(
             == pdPASS
         )
         {
-            AlarmState state =
+            AlarmState alarmState =
                 evaluateTemperature(
                     data.temperature
                 );
@@ -2186,7 +2103,7 @@ static void AlarmTask(
 
             bool alarmActive =
                 (
-                    state !=
+                    alarmState !=
                     AlarmState::NORMAL
                 );
 
@@ -2194,6 +2111,46 @@ static void AlarmTask(
             Buzzer_SetAlarm(
                 alarmActive
             );
+
+
+            /*
+             * EVENT_ALARM only changes on transition.
+             */
+
+            if (
+                alarmActive &&
+                !previousAlarmActive
+            )
+            {
+                xEventGroupSetBits(
+                    systemEventGroup,
+                    EVENT_ALARM
+                );
+
+
+                Log(
+                    "AlarmTask -> EVENT_ALARM SET\r\n"
+                );
+            }
+            else if (
+                !alarmActive &&
+                previousAlarmActive
+            )
+            {
+                xEventGroupClearBits(
+                    systemEventGroup,
+                    EVENT_ALARM
+                );
+
+
+                Log(
+                    "AlarmTask -> EVENT_ALARM CLEARED\r\n"
+                );
+            }
+
+
+            previousAlarmActive =
+                alarmActive;
 
 
             int temp10 =
@@ -2207,7 +2164,7 @@ static void AlarmTask(
 
 
             if (
-                state ==
+                alarmState ==
                 AlarmState::LOW_TEMPERATURE
             )
             {
@@ -2226,7 +2183,7 @@ static void AlarmTask(
                 );
             }
             else if (
-                state ==
+                alarmState ==
                 AlarmState::HIGH_TEMPERATURE
             )
             {
@@ -2283,10 +2240,6 @@ int main(void)
     HAL_Init();
 
 
-    /* ========================================================
-       Hardware initialization
-       ======================================================== */
-
     LED_Init();
 
     UART1_Init();
@@ -2302,10 +2255,6 @@ int main(void)
     PIR_Init();
 
 
-    /* ========================================================
-       DHT22
-       ======================================================== */
-
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
 
@@ -2314,10 +2263,6 @@ int main(void)
         GPIO_PIN_0
     );
 
-
-    /* ========================================================
-       Startup messages
-       ======================================================== */
 
     Log(
         "\r\n"
@@ -2354,10 +2299,6 @@ int main(void)
         "PIR OUT=PB1\r\n"
     );
 
-
-    /* ========================================================
-       OLED
-       ======================================================== */
 
     Log(
         "Checking OLED at I2C address 0x3C...\r\n"
@@ -2396,17 +2337,56 @@ int main(void)
     }
 
 
-    /*
-     * Give DHT22 time to become ready.
-     */
-
     HAL_Delay(
         2000
     );
 
 
     /* ========================================================
-       Create queues
+       Part X Event Group
+       ======================================================== */
+
+    systemEventGroup =
+        xEventGroupCreate();
+
+
+    if (
+        systemEventGroup ==
+        NULL
+    )
+    {
+        Log(
+            "ERROR: Event Group creation failed\r\n"
+        );
+
+        while (1)
+        {
+        }
+    }
+
+
+    /*
+     * New Event Groups start with all bits clear.
+     * The system begins ACTIVE.
+     */
+
+    xEventGroupSetBits(
+        systemEventGroup,
+        EVENT_ACTIVE
+    );
+
+
+    Log(
+        "System Event Group created.\r\n"
+    );
+
+    Log(
+        "Initial EVENT_ACTIVE SET.\r\n"
+    );
+
+
+    /* ========================================================
+       Queues
        ======================================================== */
 
     displaySensorQueue =
@@ -2440,7 +2420,6 @@ int main(void)
             "ERROR: queue creation failed\r\n"
         );
 
-
         while (1)
         {
         }
@@ -2451,20 +2430,14 @@ int main(void)
         "Display sensor queue created.\r\n"
     );
 
-
     Log(
         "Alarm sensor queue created.\r\n"
     );
-
 
     Log(
         "Display mode queue created.\r\n"
     );
 
-
-    /* ========================================================
-       Initial display mode
-       ======================================================== */
 
     DisplayMode initialMode =
         DisplayMode::TEMPERATURE;
@@ -2477,7 +2450,7 @@ int main(void)
 
 
     /* ========================================================
-       Create the five meaningful application tasks
+       Tasks
        ======================================================== */
 
     BaseType_t okSensor =
@@ -2547,7 +2520,6 @@ int main(void)
             "ERROR: task creation failed\r\n"
         );
 
-
         while (1)
         {
         }
@@ -2558,30 +2530,22 @@ int main(void)
         "SensorTask created successfully.\r\n"
     );
 
-
     Log(
         "DisplayTask created successfully.\r\n"
     );
-
 
     Log(
         "InputTask created successfully.\r\n"
     );
 
-
     Log(
         "AlarmTask created successfully.\r\n"
     );
-
 
     Log(
         "MotionTask created successfully.\r\n"
     );
 
-
-    /* ========================================================
-       Start FreeRTOS
-       ======================================================== */
 
     Log(
         "Starting scheduler...\r\n"
@@ -2590,10 +2554,6 @@ int main(void)
 
     vTaskStartScheduler();
 
-
-    /*
-     * We should never reach here.
-     */
 
     Log(
         "ERROR: scheduler failed to start\r\n"

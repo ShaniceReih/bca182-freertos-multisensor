@@ -4,200 +4,241 @@
 
 This project is my implementation of a real-time room monitoring system using an **STM32F103C8T6 Blue Pill** and **FreeRTOS**.
 
-The system monitors temperature, humidity, ambient light, and motion. Sensor information is shown on an SSD1306 OLED display, while a rotary encoder is used to move between display pages. A buzzer is activated when the temperature goes outside the allowed range.
+The system monitors temperature, humidity, ambient light, and motion. The sensor readings are displayed on an SSD1306 OLED, while a rotary encoder is used to move between the different display pages.
 
-I also implemented an ACTIVE/INACTIVE state system. When no motion is detected for 15 seconds, the system becomes INACTIVE and the OLED is blanked. Once PIR motion is detected again, the system returns to ACTIVE mode.
+A buzzer is used for the temperature alarm. The system also has ACTIVE and INACTIVE states. If no motion is detected for 15 seconds, the OLED is blanked and the system becomes INACTIVE. When the PIR sensor detects motion again, the system returns to ACTIVE.
 
-The project was developed using:
-
-- PlatformIO
-- STM32Cube HAL
-- FreeRTOS
-- Wokwi
-- Unity
-- Cppcheck
-- Git and GitHub
+The project was developed and tested using PlatformIO, STM32Cube HAL, FreeRTOS, Wokwi, Unity, Cppcheck, Git, and GitHub.
 
 ---
 
 ## Features
 
-The final system includes:
-
-- DHT22 temperature and humidity monitoring
-- LDR ambient-light monitoring
+- Temperature and humidity monitoring using DHT22
+- Ambient light monitoring using an LDR
 - SSD1306 OLED display
 - Four display pages
 - Rotary encoder navigation
-- High- and low-temperature alarm detection
+- High- and low-temperature alarm
 - PWM buzzer output
-- PIR motion sensing
-- ACTIVE and INACTIVE operating states
-- Automatic OLED blanking during inactivity
-- FreeRTOS multitasking
-- Queue-based sensor communication
-- FreeRTOS task notifications
-- UART protection using a recursive mutex
+- PIR motion detection
+- ACTIVE and INACTIVE system states
+- Automatic OLED blanking after inactivity
+- Five FreeRTOS tasks
+- Queue-based communication
+- Task notifications
+- Recursive mutex for UART logging
 - Native unit testing
 - Static code analysis
-- Wokwi functional verification
-- Deliberate FreeRTOS fault experiments
+- Functional verification in Wokwi
+- FreeRTOS fault experiments
 
 ---
 
 ## Learning Objectives
 
-Through this laboratory project, I practiced how to design a small embedded system using real-time operating-system concepts instead of placing all program logic inside one continuous loop.
+This laboratory helped me understand how an embedded application can be divided into separate real-time tasks instead of placing everything inside one main loop.
 
-The project helped me apply:
+Some of the concepts I applied were:
 
 - FreeRTOS task creation
 - task priorities
 - periodic execution
-- Ready, Running, and Blocked task states
-- `vTaskDelay()` and `vTaskDelayUntil()`
+- task blocking
+- `vTaskDelay()`
+- `vTaskDelayUntil()`
 - queues
 - mutexes
 - task notifications
-- interrupt-driven input
-- state-machine logic
-- modular C++ design
+- interrupt-based input
+- state-machine design
+- modular C++ programming
 - unit testing
-- static code analysis
-- simulation-based verification
-- incremental Git development
+- static analysis
+- Git version control
 
 ---
 
 ## System Architecture
 
-The project is divided into sensing, user input, display, alarm, motion/state handling, and shared RTOS communication objects.
+The system is divided into input devices, FreeRTOS tasks, communication objects, and outputs.
 
-```mermaid
-flowchart TD
+```text
+ DHT22                LDR
+   |                   |
+   +-------+-----------+
+           |
+      SensorTask
+        /     \
+       /       \
+      v         v
+ Display Queue  Alarm Queue
+      |             |
+      v             v
+ DisplayTask     AlarmTask ------> Buzzer
+      |
+      v
+     OLED
 
-    DHT[DHT22<br/>Temperature + Humidity]
-    LDR[LDR<br/>Ambient Light]
-    PIR[PIR Motion Sensor]
-    ENC[Rotary Encoder]
 
-    SENSOR[SensorTask]
-    INPUT[InputTask]
-    MOTION[MotionTask]
-    ALARM[AlarmTask]
-    DISPLAY[DisplayTask]
+ Rotary Encoder ----> InputTask ----> Display Mode Queue
+                                      |
+                                      v
+                                  DisplayTask
 
-    DISPLAYQ[Display Sensor Queue]
-    ALARMQ[Alarm Sensor Queue]
-    MODEQ[Display Mode Queue]
 
-    NOTIFY[Task Notifications]
-    MUTEX[UART Recursive Mutex]
-
-    OLED[SSD1306 OLED]
-    BUZZER[Buzzer]
-    UART[UART1 Serial Output]
-
-    DHT --> SENSOR
-    LDR --> SENSOR
-
-    SENSOR --> DISPLAYQ
-    SENSOR --> ALARMQ
-
-    DISPLAYQ --> DISPLAY
-    ALARMQ --> ALARM
-
-    ENC --> INPUT
-    INPUT --> MODEQ
-    MODEQ --> DISPLAY
-
-    PIR --> MOTION
-    MOTION --> NOTIFY
-    ALARM --> NOTIFY
-    NOTIFY --> DISPLAY
-
-    DISPLAY --> OLED
-    ALARM --> BUZZER
-
-    SENSOR --- MUTEX
-    INPUT --- MUTEX
-    MOTION --- MUTEX
-    ALARM --- MUTEX
-    DISPLAY --- MUTEX
-
-    MUTEX --> UART
+ PIR Sensor -------> MotionTask
+                         |
+                         v
+                  ACTIVE / INACTIVE
+                         |
+                  Task Notification
+                         |
+                         v
+                    DisplayTask
 ```
 
 **Figure 1 — System architecture.**  
-The diagram shows how the sensors, FreeRTOS tasks, queues, task notifications, shared UART resource, OLED, and buzzer are connected.
+This diagram shows the main flow of data from the sensors and user inputs to the FreeRTOS tasks and system outputs.
 
 ---
 
 ## FreeRTOS Architecture
-### Task Design
 
-The final firmware uses five main FreeRTOS tasks.
+The firmware uses five FreeRTOS tasks. Each task has one main responsibility.
 
-| Task | Priority | Main Responsibility | Typical Blocking Behavior |
+## Task Design
+
+| Task | Priority | Responsibility | Blocking / Timing |
 |---|---:|---|---|
-| `SensorTask` | 2 | Reads temperature, humidity, light, and the latest motion status | `vTaskDelayUntil()` |
-| `DisplayTask` | 1 | Owns the OLED and displays the selected sensor page | Waits for queue data / notifications |
-| `InputTask` | 3 | Processes rotary encoder movement and button input | `vTaskDelay()` |
-| `AlarmTask` | 2 | Evaluates temperature and controls the buzzer | Waits for sensor data |
-| `MotionTask` | 3 | Reads the PIR sensor and manages ACTIVE/INACTIVE state | `vTaskDelayUntil()` |
+| `SensorTask` | 2 | Reads temperature, humidity, light, and motion status | `vTaskDelayUntil()` |
+| `DisplayTask` | 1 | Updates the OLED and shows the selected page | Waits for data and notifications |
+| `InputTask` | 3 | Reads the rotary encoder | `vTaskDelay()` |
+| `AlarmTask` | 2 | Checks temperature and controls the buzzer | Waits for sensor data |
+| `MotionTask` | 3 | Reads the PIR sensor and updates the system state | `vTaskDelayUntil()` |
 
 ### Priority Design
 
-`InputTask` and `MotionTask` use priority 3 because user input and motion changes should be handled quickly.
+`InputTask` and `MotionTask` use priority 3 because user input and motion detection should respond quickly.
 
-`SensorTask` and `AlarmTask` use priority 2 because sensor acquisition and alarm processing are important but do not require the same immediate response as input events.
+`SensorTask` and `AlarmTask` use priority 2 because they are important but do not require the same immediate response as input events.
 
-`DisplayTask` uses priority 1 because updating the OLED is less time-critical than sensing, motion detection, or alarm processing.
+`DisplayTask` uses priority 1 because updating the OLED is less time-critical.
 
-One important design rule in this project is that the higher-priority tasks still block regularly. This prevents them from starving the lower-priority tasks.
+The higher-priority tasks still block or delay regularly. This is important because a high-priority task that never blocks can prevent lower-priority tasks from running.
 
 ---
 
-## FreeRTOS Task Communication
+## Inter-Task Communication
 
-```mermaid
-flowchart LR
+The tasks communicate using three queues, task notifications, and one UART mutex.
 
-    S[SensorTask<br/>Priority 2]
-    I[InputTask<br/>Priority 3]
-    M[MotionTask<br/>Priority 3]
-    A[AlarmTask<br/>Priority 2]
-    D[DisplayTask<br/>Priority 1]
+```text
+                 +----------------+
+                 |   SensorTask   |
+                 +----------------+
+                    |          |
+                    |          |
+                    v          v
+          displaySensorQueue  alarmSensorQueue
+                    |          |
+                    v          v
+              DisplayTask   AlarmTask
 
-    Q1[displaySensorQueue]
-    Q2[alarmSensorQueue]
-    Q3[displayModeQueue]
 
-    N[Task Notifications]
-    U[serialMutex]
+ Rotary Encoder
+       |
+       v
+   InputTask
+       |
+       v
+ displayModeQueue
+       |
+       v
+  DisplayTask
 
-    S --> Q1
-    Q1 --> D
 
-    S --> Q2
-    Q2 --> A
+ MotionTask --------+
+                    |
+ AlarmTask ---------+----> Task Notifications ----> DisplayTask
 
-    I --> Q3
-    Q3 --> D
 
-    M --> N
-    A --> N
-    N --> D
-
-    S --- U
-    I --- U
-    M --- U
-    A --- U
-    D --- U
+ SensorTask   \
+ DisplayTask   \
+ InputTask      >---- serialMutex ----> UART1
+ AlarmTask     /
+ MotionTask   /
 ```
 
 **Figure 2 — FreeRTOS task communication.**  
-The sensor readings are distributed using queues, display modes are passed from `InputTask`, and state/alarm events are delivered to `DisplayTask` using task notifications.
+Queues are used when actual data must be transferred. Task notifications are used for simple events, while the mutex protects the shared UART peripheral.
+
+### Sensor Queues
+
+`SensorTask` produces sensor information using:
+
+```cpp
+struct SensorData
+{
+    float temperature;
+    float humidity;
+    int lightLevel;
+    bool motionDetected;
+};
+```
+
+The data is sent through:
+
+```text
+displaySensorQueue
+alarmSensorQueue
+```
+
+Both are single-element queues. `xQueueOverwrite()` is used because the display and alarm only need the latest sensor reading.
+
+### Display Mode Queue
+
+`InputTask` sends the selected OLED page through:
+
+```text
+displayModeQueue
+```
+
+The display pages are:
+
+```text
+TEMPERATURE
+HUMIDITY
+LIGHT
+MOTION
+```
+
+Clockwise encoder rotation moves to the next page. Counterclockwise rotation moves to the previous page.
+
+### Task Notifications
+
+Task notifications are used for events such as:
+
+```text
+ACTIVE
+INACTIVE
+MOTION
+ALARM
+```
+
+They provide a lightweight way for `MotionTask` and `AlarmTask` to inform `DisplayTask` about important changes.
+
+### UART Mutex
+
+Several tasks print messages through UART1.
+
+The shared UART is protected using:
+
+```text
+serialMutex
+```
+
+This prevents multiple tasks from using the UART at the same time.
 
 ---
 
@@ -206,19 +247,19 @@ The sensor readings are distributed using queues, display modes are passed from 
 | Component | Purpose |
 |---|---|
 | STM32F103C8T6 Blue Pill | Main microcontroller |
-| DHT22 | Temperature and humidity sensing |
-| Photoresistor / LDR | Relative ambient-light sensing |
-| SSD1306 OLED | Display output |
-| Rotary Encoder | User navigation |
+| DHT22 | Temperature and humidity |
+| LDR | Ambient light |
+| SSD1306 OLED | Display |
+| Rotary Encoder | User input |
 | PIR Sensor | Motion detection |
 | Buzzer | Temperature alarm |
-| UART1 | Runtime logging and debugging |
+| UART1 | Debug output |
 
 ---
 
 ## Pin Configuration
 
-| Device / Signal | STM32 Pin |
+| Device | STM32 Pin |
 |---|---|
 | DHT22 Data | PB0 |
 | LDR ADC | PA0 |
@@ -232,7 +273,7 @@ The sensor readings are distributed using queues, display modes are passed from 
 | UART1 TX | PA9 |
 | UART1 RX | PA10 |
 
-The SSD1306 OLED uses I2C1 at address:
+The SSD1306 OLED uses I2C1 with address:
 
 ```text
 0x3C
@@ -240,117 +281,56 @@ The SSD1306 OLED uses I2C1 at address:
 
 ---
 
-## Inter-Task Communication
-
-### Sensor Data Queues
-
-`SensorTask` collects the latest readings using the following structure:
-
-```cpp
-struct SensorData
-{
-    float temperature;
-    float humidity;
-    int lightLevel;
-    bool motionDetected;
-};
-```
-
-The sensor data is distributed through:
-
-```text
-displaySensorQueue
-alarmSensorQueue
-```
-
-Both queues use `xQueueOverwrite()` because only the newest sensor reading is needed.
-
-### Display Mode Queue
-
-The currently selected OLED page is sent from `InputTask` to `DisplayTask` through:
-
-```text
-displayModeQueue
-```
-
-The available pages are:
-
-```text
-TEMPERATURE
-HUMIDITY
-LIGHT
-MOTION
-```
-
-Clockwise rotation moves to the next page, while counterclockwise rotation moves to the previous page.
-
-### Task Notifications
-
-Task notifications are used for lightweight event signaling.
-
-The events include:
-
-```text
-ACTIVE
-INACTIVE
-MOTION
-ALARM
-```
-
-These notifications allow `MotionTask` and `AlarmTask` to inform `DisplayTask` when an important event occurs.
-
-### UART Mutex
-
-Several FreeRTOS tasks use UART1 for diagnostic messages.
-
-To avoid simultaneous UART access, the project uses a recursive mutex:
-
-```text
-serialMutex
-```
-
-The mutex ensures that one task completes its UART operation before another task uses the same shared resource.
-
----
-
 ## State Machine
 
-The room-monitoring system has two operating states:
+The room monitor has two states: ACTIVE and INACTIVE.
 
 ```text
-ACTIVE
-INACTIVE
-```
-
-```mermaid
-stateDiagram-v2
-
-    [*] --> ACTIVE
-
-    ACTIVE --> ACTIVE: PIR motion detected
-    ACTIVE --> INACTIVE: 15 seconds without motion
-    INACTIVE --> ACTIVE: PIR motion detected
+                  +----------------+
+                  |     ACTIVE     |
+                  |                |
+                  | OLED visible   |
+                  | Input enabled  |
+                  +-------+--------+
+                          |
+                          |
+                 15 seconds without
+                       motion
+                          |
+                          v
+                  +----------------+
+                  |    INACTIVE    |
+                  |                |
+                  | OLED blanked   |
+                  | Input ignored  |
+                  +-------+--------+
+                          |
+                          |
+                    PIR motion
+                      detected
+                          |
+                          +-----------> ACTIVE
 ```
 
 **Figure 3 — System state machine.**  
-The system begins in ACTIVE mode. Fifteen seconds without motion causes a transition to INACTIVE. PIR motion returns the system to ACTIVE.
+The system starts in ACTIVE mode. After 15 seconds without motion it becomes INACTIVE. PIR motion returns it to ACTIVE.
 
-### ACTIVE
+### ACTIVE State
 
-While the system is ACTIVE:
+While ACTIVE:
 
-- sensor readings continue
-- OLED information is visible
-- rotary encoder navigation is accepted
+- sensor monitoring continues
+- the OLED is visible
+- encoder navigation works
 - alarm monitoring remains active
 
-### INACTIVE
+### INACTIVE State
 
-While the system is INACTIVE:
+While INACTIVE:
 
-- OLED is blanked
-- rotary encoder input is ignored
-- sensor readings continue
+- the OLED is blanked
+- encoder navigation is ignored
+- sensor monitoring continues
 - alarm monitoring continues
 - PIR motion can reactivate the system
 
@@ -358,80 +338,76 @@ While the system is INACTIVE:
 
 ## Temperature Alarm
 
-The alarm logic uses the following temperature limits:
+The alarm uses these limits:
 
-| Temperature | Result |
+| Temperature | System Response |
 |---|---|
 | Below 18 °C | LOW temperature alarm |
 | 18 °C to 30 °C | NORMAL |
 | Above 30 °C | HIGH temperature alarm |
 
-The exact boundary values:
+The values `18.0 °C` and `30.0 °C` are considered normal.
 
-```text
-18.0 °C
-30.0 °C
-```
-
-are both treated as NORMAL.
-
-When a high- or low-temperature condition is detected, the buzzer is activated.
+The buzzer is turned on when the temperature is outside the allowed range.
 
 ---
 
 ## Repository Structure
 
-The project was separated into multiple modules so that `main.cpp` stays focused mainly on initialization, RTOS object creation, task creation, and scheduler startup.
+The project was separated into modules so that `main.cpp` mainly handles initialization, RTOS object creation, task creation, and scheduler startup.
 
 ```text
 project/
-│
-├── include/
-│   ├── alarm.h
-│   ├── alarm_task.h
-│   ├── app_config.h
-│   ├── app_types.h
-│   ├── display.h
-│   ├── display_logic.h
-│   ├── dht22.h
-│   ├── input.h
-│   ├── logging.h
-│   ├── motion.h
-│   ├── rtos_objects.h
-│   ├── sensors.h
-│   ├── ssd1306.h
-│   └── system_state.h
-│
-├── src/
-│   ├── alarm.cpp
-│   ├── alarm_task.cpp
-│   ├── display.cpp
-│   ├── display_logic.cpp
-│   ├── dht22.cpp
-│   ├── input.cpp
-│   ├── logging.cpp
-│   ├── main.cpp
-│   ├── motion.cpp
-│   ├── rtos_objects.cpp
-│   ├── sensors.cpp
-│   ├── ssd1306.cpp
-│   └── system_state.cpp
-│
-├── test/
-│   └── test_logic/
-│       └── test_main.cpp
-│
-├── docs/
-│   ├── functional-verification.md
-│   └── fault-experiments.md
-│
-├── lib/
-│   └── FreeRTOS/
-│
-├── diagram.json
-├── platformio.ini
-├── wokwi.toml
-└── README.md
+|
++-- include/
+|   +-- alarm.h
+|   +-- alarm_task.h
+|   +-- app_config.h
+|   +-- app_types.h
+|   +-- display.h
+|   +-- display_logic.h
+|   +-- dht22.h
+|   +-- input.h
+|   +-- logging.h
+|   +-- motion.h
+|   +-- rtos_objects.h
+|   +-- sensors.h
+|   +-- ssd1306.h
+|   +-- system_state.h
+|
++-- src/
+|   +-- alarm.cpp
+|   +-- alarm_task.cpp
+|   +-- display.cpp
+|   +-- display_logic.cpp
+|   +-- dht22.cpp
+|   +-- input.cpp
+|   +-- logging.cpp
+|   +-- main.cpp
+|   +-- motion.cpp
+|   +-- rtos_objects.cpp
+|   +-- sensors.cpp
+|   +-- ssd1306.cpp
+|   +-- system_state.cpp
+|
++-- test/
+|   +-- test_logic/
+|       +-- test_main.cpp
+|
++-- docs/
+|   +-- functional-verification.md
+|   +-- fault-experiments.md
+|   +-- images/
+|       +-- wokwi-circuit.png
+|       +-- finished-system.png
+|
++-- lib/
+|   +-- FreeRTOS/
+|
++-- diagram.json
++-- platformio.ini
++-- wokwi.toml
++-- README.md
 ```
 
 ---
@@ -440,14 +416,14 @@ project/
 
 ### Requirements
 
-The project can be opened and built using:
+The project requires:
 
 - Visual Studio Code
 - PlatformIO
 - Git
 - Wokwi Simulator extension
 
-Clone the repository or open the existing project directory in Visual Studio Code.
+Open the project folder in Visual Studio Code after cloning or downloading the repository.
 
 ---
 
@@ -459,13 +435,13 @@ Build the STM32 firmware using:
 pio run -e bluepill_f103c8
 ```
 
-The generated ELF file is used by Wokwi to run the STM32 simulation.
+A successful build creates the firmware used by Wokwi.
 
 ---
 
 ## Running the Wokwi Simulation
 
-Before starting Wokwi, build the STM32 environment:
+Build the project first:
 
 ```powershell
 pio run -e bluepill_f103c8
@@ -473,16 +449,17 @@ pio run -e bluepill_f103c8
 
 Then start the Wokwi Simulator from Visual Studio Code.
 
-During simulation, I can interact with the system by:
+During the simulation, the following inputs can be tested:
 
-1. changing the DHT22 temperature and humidity
-2. changing the photoresistor illumination
-3. rotating the encoder clockwise or counterclockwise
-4. pressing the encoder button
-5. triggering the PIR sensor
-6. observing the OLED display
-7. observing the buzzer
-8. checking runtime messages in the Serial Monitor
+- DHT22 temperature
+- DHT22 humidity
+- LDR illumination
+- encoder clockwise rotation
+- encoder counterclockwise rotation
+- encoder push button
+- PIR motion
+
+The OLED, buzzer, and Serial Monitor can be used to observe the response of the system.
 
 ---
 
@@ -497,51 +474,45 @@ The complete simulated circuit showing the STM32 Blue Pill connected to the DHT2
 
 ## Unit Testing
 
-To make testing easier, hardware-independent logic was separated from the hardware drivers.
+Hardware-independent functions were separated from hardware code so they could be tested using PlatformIO's native environment.
 
-The project includes **13 native unit tests**.
+A total of **13 unit tests** were created.
 
 ### Alarm Logic — 5 Tests
 
-The following cases were tested:
+The alarm tests check:
 
-```text
-below 18 °C
-exactly 18 °C
-normal temperature
-exactly 30 °C
-above 30 °C
-```
+- below 18 °C
+- exactly 18 °C
+- normal temperature
+- exactly 30 °C
+- above 30 °C
 
 ### Display Navigation — 4 Tests
 
-The tests verify:
+The navigation tests check:
 
-```text
-forward navigation
-forward wraparound
-reverse navigation
-reverse wraparound
-```
+- next page
+- forward wraparound
+- previous page
+- reverse wraparound
 
 ### System State — 4 Tests
 
-The tests verify:
+The state tests check:
 
-```text
-ACTIVE before timeout
-INACTIVE exactly at timeout
-INACTIVE after timeout
-motion returning the system to ACTIVE
-```
+- ACTIVE before timeout
+- INACTIVE exactly at timeout
+- INACTIVE after timeout
+- motion returning the system to ACTIVE
 
-Run the tests using:
+Tests are run using:
 
 ```powershell
 pio test -e native
 ```
 
-Verified result:
+Result:
 
 ```text
 13 test cases: 13 succeeded
@@ -551,13 +522,13 @@ Verified result:
 
 ## Static Code Analysis
 
-Static analysis was performed using:
+Static analysis was run using:
 
 ```powershell
 pio check
 ```
 
-The final result was:
+Results:
 
 | Severity | Findings |
 |---|---:|
@@ -565,34 +536,34 @@ The final result was:
 | MEDIUM | 0 |
 | LOW | 102 |
 
-Both configured PlatformIO environments passed the static-analysis stage.
+Both PlatformIO environments passed.
 
-Most of the LOW findings were style-related, including C-style casts and functions that Cppcheck could not determine were used indirectly through callbacks, interrupt handlers, or the embedded runtime.
+Most LOW findings were style-related, such as C-style casts and functions that Cppcheck could not detect as being used indirectly through callbacks or interrupt handling.
 
-Because the project already worked correctly in Wokwi, stable hardware-related code was not changed only for the purpose of removing harmless style warnings.
+I reviewed the findings but did not change stable hardware code only to remove low-severity style warnings.
 
 ---
 
 ## Functional Verification
 
-The complete system was verified in Wokwi using ten functional tests.
+The full system was tested in Wokwi.
 
-| Test ID | Stimulus | Observed Result | Status |
+| Test ID | Input / Stimulus | Actual Result | Status |
 |---|---|---|---|
-| FT-01 | Temperature changed to 27.3 °C | OLED and Serial Monitor updated to 27.3 °C | PASS |
-| FT-02 | Humidity changed to 77.0% | OLED updated to 77.0% | PASS |
-| FT-03 | LDR illumination changed | Relative light value changed to 10% | PASS |
-| FT-04 | Encoder rotated clockwise from LIGHT | Display moved to MOTION | PASS |
-| FT-05 | Encoder rotated counterclockwise from MOTION | Display moved to LIGHT | PASS |
-| FT-06 | Temperature changed to 35.8 °C | High-temperature alarm and buzzer activated | PASS |
+| FT-01 | Temperature set to 27.3 °C | OLED and Serial updated to 27.3 °C | PASS |
+| FT-02 | Humidity set to 77.0% | OLED updated to 77.0% | PASS |
+| FT-03 | LDR illumination changed | Relative light reading changed to 10% | PASS |
+| FT-04 | Encoder CW from LIGHT | Page changed to MOTION | PASS |
+| FT-05 | Encoder CCW from MOTION | Page changed to LIGHT | PASS |
+| FT-06 | Temperature set to 35.8 °C | Alarm activated and buzzer turned on | PASS |
 | FT-07 | Temperature returned to 23.9 °C | Alarm returned to NORMAL and buzzer stopped | PASS |
-| FT-08 | PIR triggered while ACTIVE | Motion was detected | PASS |
-| FT-09 | No motion for 15 seconds | System changed to INACTIVE and OLED blanked | PASS |
-| FT-10 | PIR triggered while INACTIVE | System returned to ACTIVE and OLED was restored | PASS |
+| FT-08 | PIR triggered while ACTIVE | Motion detected | PASS |
+| FT-09 | No motion for 15 seconds | System became INACTIVE and OLED blanked | PASS |
+| FT-10 | PIR triggered while INACTIVE | System returned to ACTIVE | PASS |
 
-All ten required functional tests passed.
+All 10 required functional tests passed.
 
-More detailed observations are available in:
+More detailed test observations are available in:
 
 ```text
 docs/functional-verification.md
@@ -600,41 +571,41 @@ docs/functional-verification.md
 
 ---
 
-## Deliberate FreeRTOS Fault Experiments
+## FreeRTOS Fault Experiments
 
-Three temporary faults were introduced to better understand the effect of incorrect RTOS design.
+Three temporary faults were introduced during testing.
 
 ### Experiment 1 — Removing Task Blocking
 
-The normal delay at the end of `InputTask` was temporarily removed.
+The delay at the end of `InputTask` was temporarily removed.
 
-The task then executed continuously and repeatedly printed:
+The task then ran continuously and repeatedly printed:
 
 ```text
 InputTask -> encoder button pressed
 ```
 
-The Serial Monitor was flooded, and lower-priority tasks no longer showed their normal periodic output during the observed period.
+The Serial Monitor became flooded and normal lower-priority task output was no longer observed during the test.
 
-This demonstrated how a high-priority task that never blocks can consume CPU time and starve lower-priority tasks.
+This showed the starvation risk caused by a high-priority task that never blocks.
 
-### Experiment 2 — Raising Task Priority
+### Experiment 2 — Increasing Task Priority
 
 `InputTask` was temporarily changed from priority 3 to priority 4.
 
-No obvious failure occurred because the task still called `vTaskDelay()` and regularly entered the Blocked state.
+The system continued operating normally because `InputTask` still used `vTaskDelay()`.
 
-This experiment showed that task priority must be considered together with execution time and blocking behavior.
+This showed that priority alone does not necessarily cause starvation. Blocking behavior is also important.
 
-### Experiment 3 — Removing UART Mutex Protection
+### Experiment 3 — Removing the UART Mutex
 
-Mutex protection was temporarily removed from `Log()`.
+The mutex protection in `Log()` was temporarily removed.
 
-No visible interleaved Serial output appeared during the observed run. However, UART access was no longer guaranteed to be synchronized.
+No obvious interleaved output was observed during the test, but UART access was no longer protected.
 
-The experiment showed why the mutex should remain in the final implementation even when a race condition is not visible every time.
+The mutex was restored because UART is still a shared resource and concurrent access could produce problems under different timing conditions.
 
-Detailed results are stored in:
+More details are available in:
 
 ```text
 docs/fault-experiments.md
@@ -646,78 +617,68 @@ docs/fault-experiments.md
 
 ### Why I Used `vTaskDelayUntil()`
 
-For periodic work such as sensor acquisition and PIR polling, I used `vTaskDelayUntil()` because it keeps task execution based on a fixed period.
+I used `vTaskDelayUntil()` for periodic tasks because it keeps execution based on a regular schedule rather than delaying relative to when the previous task iteration finishes.
 
-This avoids the timing drift that can happen when each delay begins only after the previous iteration finishes.
+### Why I Used Separate Queues
 
-### Why I Used Queues
+`SensorTask` sends data to both `DisplayTask` and `AlarmTask`.
 
-The sensor readings are produced in one task but needed by both the display and alarm tasks.
+Using two queues prevents the two consumers from competing for the same queue item.
 
-Using queues keeps those tasks separated and gives them a thread-safe way to receive the most recent sensor information.
+### Why I Used `xQueueOverwrite()`
 
-### Why I Used Separate Sensor Queues
+Only the newest sensor reading is needed, so keeping old values in a long queue would not be useful.
 
-I used one queue for `DisplayTask` and another for `AlarmTask`.
+### Why Only `DisplayTask` Uses the OLED
 
-This avoids having two consumer tasks compete for the same queue item.
-
-### Why Only `DisplayTask` Controls the OLED
-
-The OLED has one owner: `DisplayTask`.
-
-This keeps display logic in one place and prevents multiple tasks from trying to access the I2C display at the same time.
+Giving the OLED one owner keeps display code in one place and avoids simultaneous access to the I2C display.
 
 ### Why I Used Task Notifications
 
-Simple state and event changes do not need a full data queue.
+Task notifications are lightweight and are suitable for events that do not need to carry a large data structure.
 
-Task notifications provide a lightweight way for `MotionTask` and `AlarmTask` to notify `DisplayTask` about ACTIVE, INACTIVE, MOTION, and ALARM events.
+### Why I Used a UART Mutex
 
-### Why I Used a Recursive Mutex for UART
-
-UART is used by several tasks for debugging.
-
-The recursive mutex protects the shared UART peripheral so task messages do not access it simultaneously.
+Several tasks use UART for debugging. The mutex ensures that the shared UART resource is accessed in a controlled way.
 
 ### Why I Separated Logic From Hardware
 
-Functions such as alarm evaluation, display navigation, and state evaluation do not directly depend on STM32 hardware.
+Functions such as alarm checking, display navigation, and state evaluation do not need direct access to STM32 hardware.
 
-Keeping this logic separate allowed me to test it using the native PlatformIO environment.
+Separating them made it possible to test them using native unit tests.
 
 ---
 
 ## Limitations
 
-The current implementation still has some limitations:
+Current limitations include:
 
-- Most verification was performed in Wokwi rather than on a physical STM32 board.
-- The LDR value is shown as a relative percentage instead of calibrated lux.
-- Alarm thresholds are fixed in firmware.
-- The 15-second inactivity timeout is fixed in firmware.
-- Sensor history is not stored.
-- The system does not have Wi-Fi or Bluetooth communication.
-- Large amounts of UART debugging can affect timing.
-- Real hardware may behave differently from Wokwi because of electrical noise, component tolerances, sensor timing, and wiring conditions.
+- testing was mainly performed in Wokwi
+- the LDR reading is a relative percentage, not calibrated lux
+- temperature alarm thresholds are fixed
+- the inactivity timeout is fixed at 15 seconds
+- sensor history is not stored
+- there is no Wi-Fi or Bluetooth communication
+- heavy UART logging can affect timing
+- physical hardware may behave differently because of noise, component tolerance, and wiring conditions
 
 ---
 
 ## Future Improvements
 
-Possible improvements I would consider for a future version include:
+Possible future improvements are:
 
-- testing the complete system on a physical STM32 Blue Pill
-- calibrated light measurement
-- adjustable temperature thresholds
-- adjustable inactivity timeout
-- saving sensor history
-- adding Wi-Fi or Bluetooth
-- remote monitoring
-- improved OLED graphics
-- configurable settings stored in flash
-- watchdog support
-- runtime FreeRTOS task statistics
+- test the project using a physical STM32 Blue Pill
+- calibrate the LDR reading
+- allow adjustable alarm thresholds
+- allow adjustable inactivity timeout
+- add sensor data logging
+- add Wi-Fi or Bluetooth
+- create a remote monitoring interface
+- improve the OLED display layout
+- save configuration settings in flash
+- add watchdog monitoring
+- add FreeRTOS runtime statistics
 
 ---
 
@@ -726,14 +687,15 @@ Possible improvements I would consider for a future version include:
 ![Finished System](docs/images/finished-system.png)
 
 **Figure 5 — Finished room-monitoring system.**  
-The completed Wokwi simulation running in ACTIVE mode, with the OLED displaying the live temperature page.
+The completed Wokwi simulation running in ACTIVE mode with live sensor data displayed on the OLED.
+
 ---
 
 ## References and Acknowledgments
 
-This project was developed for the **BCA182 Embedded Systems Laboratory Activity 1**.
+This project was developed for **BCA182 Embedded Systems Laboratory Activity 1**.
 
-References and tools used during development include:
+References and tools used during the project include:
 
 - FreeRTOS documentation
 - STM32Cube HAL documentation
@@ -741,7 +703,6 @@ References and tools used during development include:
 - Wokwi documentation
 - Unity Test Framework
 - Cppcheck
-- Git
-- GitHub
+- Git and GitHub
 
-I also used the laboratory instructions as the main design and verification guide throughout the project.git status --short
+The laboratory instructions were used as the main guide for the system design, implementation, and verification.

@@ -124,6 +124,17 @@ static SemaphoreHandle_t serialMutex = NULL;
 
 
 
+/* Part X: direct-to-task notification target and event bits. */
+
+static volatile TaskHandle_t displayTaskHandle = NULL;
+
+#define NOTIFY_EVENT_ACTIVE      (1UL << 0)
+#define NOTIFY_EVENT_MOTION      (1UL << 1)
+#define NOTIFY_EVENT_ALARM       (1UL << 2)
+#define NOTIFY_EVENT_INACTIVE    (1UL << 3)
+
+
+
 
 
 /* ============================================================
@@ -3432,6 +3443,24 @@ static void MotionTask(
 
         {
 
+            if (displayTaskHandle != NULL)
+
+            {
+
+                xTaskNotify(
+
+                    displayTaskHandle,
+
+                    NOTIFY_EVENT_MOTION,
+
+                    eSetBits
+
+                );
+
+            }
+
+
+
             Log(
 
                 "MotionTask -> PIR motion detected\r\n"
@@ -3472,6 +3501,24 @@ static void MotionTask(
 
             {
 
+                if (displayTaskHandle != NULL)
+
+                {
+
+                    xTaskNotify(
+
+                        displayTaskHandle,
+
+                        NOTIFY_EVENT_ACTIVE,
+
+                        eSetBits
+
+                    );
+
+                }
+
+
+
                 Log(
 
                     "MotionTask -> System state: ACTIVE\r\n"
@@ -3483,6 +3530,24 @@ static void MotionTask(
             else
 
             {
+
+                if (displayTaskHandle != NULL)
+
+                {
+
+                    xTaskNotify(
+
+                        displayTaskHandle,
+
+                        NOTIFY_EVENT_INACTIVE,
+
+                        eSetBits
+
+                    );
+
+                }
+
+
 
                 Log(
 
@@ -3896,6 +3961,30 @@ static void DisplayTask(
 
 
 
+    /*
+
+     * Part X: capture this task's own handle after the scheduler starts.
+
+     * This avoids changing the xTaskCreate() call that is already proven
+
+     * stable in the Part XI build.
+
+     */
+
+    displayTaskHandle =
+
+        xTaskGetCurrentTaskHandle();
+
+
+
+    Log(
+
+        "DisplayTask notification target ready.\r\n"
+
+    );
+
+
+
 
 
     SensorData latestData =
@@ -3951,6 +4040,110 @@ static void DisplayTask(
     for (;;)
 
     {
+
+        /*
+
+         * Part X: consume any pending notification bits without blocking.
+
+         * Existing queue/state behavior remains unchanged.
+
+         */
+
+        uint32_t notifiedEvents = 0;
+
+
+
+        if (
+
+            xTaskNotifyWait(
+
+                0,
+
+                0xFFFFFFFFUL,
+
+                &notifiedEvents,
+
+                0
+
+            ) == pdTRUE
+
+        )
+
+        {
+
+            if (
+
+                (notifiedEvents & NOTIFY_EVENT_ACTIVE) != 0
+
+            )
+
+            {
+
+                Log(
+
+                    "DisplayTask notify -> EVENT_ACTIVE\r\n"
+
+                );
+
+            }
+
+
+
+            if (
+
+                (notifiedEvents & NOTIFY_EVENT_INACTIVE) != 0
+
+            )
+
+            {
+
+                Log(
+
+                    "DisplayTask notify -> EVENT_INACTIVE\r\n"
+
+                );
+
+            }
+
+
+
+            if (
+
+                (notifiedEvents & NOTIFY_EVENT_MOTION) != 0
+
+            )
+
+            {
+
+                Log(
+
+                    "DisplayTask notify -> EVENT_MOTION\r\n"
+
+                );
+
+            }
+
+
+
+            if (
+
+                (notifiedEvents & NOTIFY_EVENT_ALARM) != 0
+
+            )
+
+            {
+
+                Log(
+
+                    "DisplayTask notify -> EVENT_ALARM\r\n"
+
+                );
+
+            }
+
+        }
+
+
 
         SensorData incomingData;
 
@@ -4370,6 +4563,12 @@ static void AlarmTask(
 
 
 
+    bool previousAlarmActive =
+
+        false;
+
+
+
 
 
     Buzzer_SetAlarm(
@@ -4435,6 +4634,36 @@ static void AlarmTask(
                     AlarmState::NORMAL
 
                 );
+
+
+
+            if (alarmActive != previousAlarmActive)
+
+            {
+
+                if (displayTaskHandle != NULL)
+
+                {
+
+                    xTaskNotify(
+
+                        displayTaskHandle,
+
+                        NOTIFY_EVENT_ALARM,
+
+                        eSetBits
+
+                    );
+
+                }
+
+
+
+                previousAlarmActive =
+
+                    alarmActive;
+
+            }
 
 
 
@@ -4905,6 +5134,14 @@ int main(void)
     Log(
 
         "UART recursive mutex created successfully.\r\n"
+
+    );
+
+
+
+    Log(
+
+        "Part X task notifications enabled for ACTIVE/MOTION/ALARM events.\r\n"
 
     );
 
